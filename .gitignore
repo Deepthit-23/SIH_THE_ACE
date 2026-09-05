@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Env
+.env
+.env.local
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data (keep dir structure, ignore large/raw files)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# ML artifacts
+*.pkl
+*.joblib
+models/*.bin
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Docker
+pgdata/

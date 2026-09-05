@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    container_name: mplad_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mplad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mplad}
+      POSTGRES_DB: ${POSTGRES_DB:-mplad}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mplad} -d ${POSTGRES_DB:-mplad}"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  backend:
+    build: ./backend
+    container_name: mplad_backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-mplad}:${POSTGRES_PASSWORD:-mplad}@db:5432/${POSTGRES_DB:-mplad}
+      DATA_DIR: /data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
