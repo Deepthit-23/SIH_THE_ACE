@@ -3,8 +3,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Project
-from app.schemas import ProjectList, ProjectOut
+from app.models import Project, RiskFlag
+from app.schemas import (
+    ExplanationItem,
+    ProjectDetail,
+    ProjectList,
+    ProjectOut,
+    severity_band,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -35,9 +41,23 @@ def list_projects(
     return ProjectList(total=total, items=[ProjectOut.model_validate(r) for r in rows])
 
 
-@router.get("/{project_id}", response_model=ProjectOut)
-def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectOut:
+@router.get("/{project_id}", response_model=ProjectDetail)
+def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectDetail:
+    """Full project detail + the complete ordered risk explanation list."""
     row = db.get(Project, project_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectOut.model_validate(row)
+
+    rf = db.scalar(select(RiskFlag).where(RiskFlag.project_id == project_id))
+
+    detail = ProjectDetail.model_validate(row)
+    detail.amount = row.sanctioned_amount or row.final_amount
+    if rf is not None:
+        detail.combined_risk_score = rf.combined_risk_score
+        detail.ml_anomaly_score = rf.ml_anomaly_score
+        detail.severity = severity_band(rf.combined_risk_score)
+        detail.rule_flags = rf.rule_flags
+        detail.explanation = [
+            ExplanationItem(**e) for e in (rf.explanation or []) if isinstance(e, dict)
+        ]
+    return detail

@@ -9,7 +9,7 @@ from app.database import Base, engine
 
 # Import models so they are registered on Base.metadata before create_all.
 from app import models  # noqa: F401
-from app.routers import health, projects
+from app.routers import audit, health, meta, patterns, projects, risk
 
 logger = logging.getLogger("uvicorn")
 
@@ -40,7 +40,11 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(meta.router)
 app.include_router(projects.router)
+app.include_router(risk.router)
+app.include_router(patterns.router)
+app.include_router(audit.router)
 
 
 @app.get("/", tags=["meta"])

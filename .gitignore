@@ -15,6 +15,7 @@ venv/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/_*.mjs
 
 # Data (keep dir structure, ignore large/raw files)
 data/raw/*

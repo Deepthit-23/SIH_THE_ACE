@@ -14,9 +14,12 @@ pydantic-settings==2.7.0
 pandas==2.2.3
 numpy==2.1.3
 
-# ML (Phase 4)
+# ML (Phase 4) — IsolationForest. Explainability is feature-deviation ranking,
+# not SHAP (dropped: version-fragile TreeExplainer support for IsolationForest).
 scikit-learn==1.6.0
-shap==0.46.0
+
+# Rule engine (Phase 3) — fuzzy text matching for the stalled/ghost-project rule
+rapidfuzz==3.10.1
 
 # Tests
 pytest==8.3.4
