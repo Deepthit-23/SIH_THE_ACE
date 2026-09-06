@@ -1,7 +1,7 @@
 # Deployment
 
-Two paths. **Local Docker is the primary/venue path** — fully offline once built.
-The hosted deploy is a fallback link for judges.
+Two paths. **Local Docker is the primary path** — fully offline once built.
+The hosted deploy is an optional shareable link.
 
 ---
 

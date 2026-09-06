@@ -168,15 +168,15 @@ _(synthetic project ids shift if `inject_anomalies` is re-run; ids 60625 and 470
 
 ## Deployment
 
-- **Local (primary / venue fallback):** the Docker Compose path above. Fully
-  self-contained, no internet needed after the first image build.
-- **Live demo:** frontend on Vercel, backend + Postgres on Render/Railway. See
+- **Local (primary):** the Docker Compose path above. Fully self-contained, no
+  internet needed after the first image build.
+- **Hosted:** frontend on Vercel, backend + Postgres on Render/Railway. See
   `DEPLOY.md`.
 
 ## Out of scope — deliberate
 
-This is a 5-day hackathon prototype. The following were **intentionally not
-built**, to keep the scope honest:
+This is a prototype. The following were **intentionally not built**, to keep the
+scope honest:
 
 - **No real blockchain / distributed ledger.** The `audit_log` hash-chain is a
   single-writer demonstration of tamper-evidence — no consensus, no replication.

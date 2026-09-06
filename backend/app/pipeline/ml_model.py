@@ -12,7 +12,7 @@ the rule engine.
 Explainability: for each flagged project, rank features by robust deviation
 `(value - median) / IQR` from the population and turn the top few into a
 plain-language reason. (SHAP's TreeExplainer support for IsolationForest is
-version-fragile; feature-deviation ranking is the deliberate hackathon choice.)
+version-fragile; feature-deviation ranking is the deliberate choice here.)
 """
 
 from __future__ import annotations
