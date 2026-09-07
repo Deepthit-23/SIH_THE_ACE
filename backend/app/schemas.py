@@ -52,6 +52,8 @@ class AuditVerifyOut(BaseModel):
     valid: bool
     entries_checked: int
     broken_at: int | None = None
+    cached: bool = False
+    checked_at: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -93,6 +95,7 @@ class RiskListItem(BaseModel):
     amount: Decimal | None = None                # coalesced sanctioned/final
     combined_risk_score: float | None = None
     severity: str
+    case_status: str = "pending"
     top_reasons: list[str] = []
 
 
@@ -108,10 +111,56 @@ class ProjectDetail(ProjectOut):
 
     amount: Decimal | None = None
     combined_risk_score: float | None = None
+    rule_score: float | None = None
+    ml_score: float | None = None
     ml_anomaly_score: float | None = None
     severity: str = "unscored"
     rule_flags: dict | None = None
     explanation: list[ExplanationItem] = []
+    case_status: str = "pending"
+    case_note: str | None = None
+    case_updated_at: datetime | None = None
+
+
+class CaseUpdateIn(BaseModel):
+    status: str
+    note: str | None = None
+    reviewer: str | None = None
+
+
+class CaseReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: int
+    status: str
+    note: str | None = None
+    reviewer: str | None = None
+    updated_at: datetime | None = None
+
+
+class CaseHistoryItem(BaseModel):
+    status: str
+    reviewer: str | None = None
+    note_sha256: str
+    timestamp: str
+    payload_hash: str
+
+
+class CaseListItem(BaseModel):
+    project_id: int
+    status: str
+    note: str | None = None
+    reviewer: str | None = None
+    updated_at: datetime | None = None
+    work_description: str | None = None
+    mp_name: str | None = None
+    combined_risk_score: float | None = None
+    severity: str
+
+
+class CaseListPage(BaseModel):
+    total: int
+    items: list[CaseListItem]
 
 
 class ContractorUnitShare(BaseModel):

@@ -2,6 +2,8 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import ExplanationList, { ScoreHeadline } from "../components/ExplanationList";
+import ScoreBreakdown from "../components/ScoreBreakdown";
+import CasePanel from "../components/CasePanel";
 import { ErrorBox, Loading } from "../components/StateMessage";
 import { formatINR, text, titleCase } from "../lib/format";
 
@@ -57,13 +59,32 @@ export default function ProjectDetailPage() {
             </dl>
           </div>
 
-          <div className="rounded border border-slate-200 bg-white p-5">
-            <h3 className="text-sm font-semibold text-slate-800">Why this project was flagged</h3>
-            <p className="mb-4 mt-1 text-xs text-slate-500">
-              Ordered by contribution to the risk score. Each point is a separate
-              signal — read together, not as a single verdict.
-            </p>
-            <ExplanationList items={data.explanation} />
+          <div className="grid gap-5 lg:grid-cols-3">
+            <div className="space-y-5 lg:col-span-2">
+              <div className="rounded border border-slate-200 bg-white p-5">
+                <h3 className="text-sm font-semibold text-slate-800">Why this project was flagged</h3>
+                <p className="mb-4 mt-1 text-xs text-slate-500">
+                  Ordered by contribution to the risk score. Each point is a separate
+                  signal — read together, not as a single verdict.
+                </p>
+                <ExplanationList items={data.explanation} />
+              </div>
+              {(data.rule_flags && Object.values(data.rule_flags).some(Boolean)) || data.explanation?.length ? (
+                <ScoreBreakdown
+                  explanation={data.explanation}
+                  ruleScore={data.rule_score}
+                  mlScore={data.ml_score}
+                  combined={data.combined_risk_score}
+                />
+              ) : null}
+            </div>
+
+            <CasePanel
+              projectId={data.id}
+              initialStatus={data.case_status}
+              initialNote={data.case_note}
+              updatedAt={data.case_updated_at}
+            />
           </div>
         </>
       )}

@@ -41,8 +41,43 @@ def test_health():
 
 def test_audit_verify_shape():
     body = client.get("/audit/verify").json()
-    assert set(body) == {"valid", "entries_checked", "broken_at"}
+    assert {"valid", "entries_checked", "broken_at", "cached"} <= set(body)
     assert isinstance(body["valid"], bool)
+
+
+def test_audit_verify_second_call_is_cached():
+    client.get("/audit/verify")
+    assert client.get("/audit/verify").json()["cached"] is True
+
+
+def test_national_summary_shape(has_data):
+    if not has_data:
+        pytest.skip("no data loaded")
+    b = client.get("/meta/summary").json()
+    assert b["projects_scored"] > 0
+    assert b["allocated_amount"] > 0
+    _assert_clean(b)
+
+
+def test_csv_export(has_data):
+    if not has_data:
+        pytest.skip("no data loaded")
+    r = client.get("/risk-scores/export.csv", params={"min_score": 90})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    lines = r.text.strip().splitlines()
+    assert lines[0].startswith("project_id,work_id,")
+    assert len(lines) > 1
+    assert "is_synthetic_anomaly" not in r.text and "anomaly_type" not in r.text
+
+
+def test_risk_scores_search(has_data):
+    if not has_data:
+        pytest.skip("no data loaded")
+    r = client.get("/risk-scores", params={"q": "street light", "limit": 5})
+    assert r.status_code == 200
+    for item in r.json()["items"]:
+        _assert_clean(item)
 
 
 def test_risk_scores_shape_and_sorting(has_data):

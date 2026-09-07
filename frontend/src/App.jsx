@@ -3,6 +3,7 @@ import Layout from "./components/Layout.jsx";
 import RiskListPage from "./pages/RiskListPage.jsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.jsx";
 import PatternsPage from "./pages/PatternsPage.jsx";
+import CasesPage from "./pages/CasesPage.jsx";
 
 function NotFound() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/" element={<RiskListPage />} />
         <Route path="/projects/:id" element={<ProjectDetailPage />} />
         <Route path="/patterns" element={<PatternsPage />} />
+        <Route path="/cases" element={<CasesPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Layout>

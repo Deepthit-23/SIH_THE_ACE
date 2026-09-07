@@ -4,6 +4,7 @@ import AuditBadge from "./AuditBadge.jsx";
 const NAV = [
   { to: "/", label: "Risk list", end: true },
   { to: "/patterns", label: "District / contractor patterns" },
+  { to: "/cases", label: "Case log" },
 ];
 
 export default function Layout({ children }) {

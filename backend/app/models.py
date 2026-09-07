@@ -155,6 +155,8 @@ class RiskFlag(Base):
     )
 
     rule_flags: Mapped[dict | None] = mapped_column(JSONB)
+    rule_score: Mapped[float | None] = mapped_column(Float)   # 0-100, sum of triggered rule points
+    ml_score: Mapped[float | None] = mapped_column(Float)     # 0-100, ML contribution
     ml_anomaly_score: Mapped[float | None] = mapped_column(Float)
     combined_risk_score: Mapped[float | None] = mapped_column(Float, index=True)
     # List of {"source": "rule"|"ml", "code": str, "message": str}
@@ -165,6 +167,32 @@ class RiskFlag(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="risk_flag")
+
+
+class CaseReview(Base):
+    """Auditor workflow state for a project (one row = current state).
+
+    A project with no row here is implicitly `pending`. Every change also appends
+    a `case_review` entry to `audit_log` (same hash-chain as scoring events).
+    """
+
+    __tablename__ = "case_reviews"
+
+    STATUSES = ("pending", "under_review", "confirmed", "dismissed")
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(String)          # dismissal reason, etc.
+    reviewer: Mapped[str | None] = mapped_column(String(128))  # no auth -> free text
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class AuditLog(Base):

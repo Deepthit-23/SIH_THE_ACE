@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Project, RiskFlag
+from app.models import CaseReview, Project, RiskFlag
 from app.schemas import (
     ExplanationItem,
     ProjectDetail,
@@ -54,10 +54,18 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectDetail
     detail.amount = row.sanctioned_amount or row.final_amount
     if rf is not None:
         detail.combined_risk_score = rf.combined_risk_score
+        detail.rule_score = rf.rule_score
+        detail.ml_score = rf.ml_score
         detail.ml_anomaly_score = rf.ml_anomaly_score
         detail.severity = severity_band(rf.combined_risk_score)
         detail.rule_flags = rf.rule_flags
         detail.explanation = [
             ExplanationItem(**e) for e in (rf.explanation or []) if isinstance(e, dict)
         ]
+
+    cr = db.scalar(select(CaseReview).where(CaseReview.project_id == project_id))
+    if cr is not None:
+        detail.case_status = cr.status
+        detail.case_note = cr.note
+        detail.case_updated_at = cr.updated_at
     return detail

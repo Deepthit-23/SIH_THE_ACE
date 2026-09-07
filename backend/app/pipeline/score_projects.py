@@ -9,22 +9,31 @@ import argparse
 from datetime import datetime, timezone
 
 import pandas as pd
-from sqlalchemy import delete, insert, inspect
+from sqlalchemy import delete, insert, inspect, text
 
 from app import audit
-from app.database import engine
-from app.models import AuditLog, RiskFlag
+from app.database import Base, engine
+from app.models import AuditLog, CaseReview, RiskFlag  # noqa: F401
 from app.pipeline import ml_model, risk_scorer, rules
 
 
-def _ensure_audit_schema() -> None:
-    """audit_log gained `project_id`/`payload` in Phase 6; recreate if on old schema."""
+def _ensure_schema() -> None:
+    """Bring an existing DB up to the current schema without Alembic.
+
+    - audit_log gained project_id/payload (Phase 6): recreate if on the old shape
+    - risk_flags gained rule_score/ml_score: additive ALTER
+    - case_reviews is a new table
+    """
     insp = inspect(engine)
-    if "audit_log" in insp.get_table_names():
-        cols = {c["name"] for c in insp.get_columns("audit_log")}
-        if not {"project_id", "payload"} <= cols:
-            AuditLog.__table__.drop(engine)
-    AuditLog.__table__.create(engine, checkfirst=True)
+    with engine.begin() as c:
+        if "audit_log" in insp.get_table_names():
+            cols = {col["name"] for col in insp.get_columns("audit_log")}
+            if not {"project_id", "payload"} <= cols:
+                c.execute(text("DROP TABLE audit_log"))
+        if "risk_flags" in insp.get_table_names():
+            c.execute(text("ALTER TABLE risk_flags ADD COLUMN IF NOT EXISTS rule_score double precision"))
+            c.execute(text("ALTER TABLE risk_flags ADD COLUMN IF NOT EXISTS ml_score double precision"))
+    Base.metadata.create_all(bind=engine)  # audit_log + case_reviews if missing
 
 
 def load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -83,6 +92,8 @@ def write_risk_flags(combined: pd.DataFrame) -> tuple[int, int]:
         {
             "project_id": int(pid),
             "rule_flags": row["rule_flags"],
+            "rule_score": float(row["rule_score"]),
+            "ml_score": float(row["ml_score"]),
             "ml_anomaly_score": None if pd.isna(row["ml_anomaly_score"]) else float(row["ml_anomaly_score"]),
             "combined_risk_score": float(row["combined_risk_score"]),
             "explanation": row["explanation"],
@@ -111,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print("dry run -- risk_flags not written")
         return 0
-    _ensure_audit_schema()
+    _ensure_schema()
     n, n_audit = write_risk_flags(combined)
     print(f"wrote {n:,} risk_flags rows + {n_audit:,} audit_log entries (chain continued)")
     return 0

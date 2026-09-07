@@ -40,11 +40,34 @@ def chain_conn():
 
 
 def test_clean_chain_verifies(chain_conn):
-    assert audit.verify_chain(chain_conn) == {
-        "valid": True,
-        "entries_checked": 6,
-        "broken_at": None,
-    }
+    r = audit.verify_chain(chain_conn, use_cache=False)
+    assert r["valid"] is True
+    assert r["entries_checked"] == 6
+    assert r["broken_at"] is None
+
+
+def test_cache_returns_same_verdict_and_is_marked(chain_conn):
+    first = audit.verify_chain(chain_conn)
+    assert first["cached"] is False
+    second = audit.verify_chain(chain_conn)
+    assert second["cached"] is True
+    assert (second["valid"], second["broken_at"]) == (first["valid"], first["broken_at"])
+
+
+def test_cache_invalidates_when_a_row_is_altered(chain_conn):
+    audit.verify_chain(chain_conn)  # warm the cache -> valid
+    ids = chain_conn.execute(select(AuditLog.id).order_by(AuditLog.id)).scalars().all()
+    payload = chain_conn.execute(
+        select(AuditLog.payload).where(AuditLog.id == ids[2])
+    ).scalar_one()
+    chain_conn.execute(
+        update(AuditLog).where(AuditLog.id == ids[2])
+        .values(payload={**payload, "combined_risk_score": "9.9999"})
+    )
+    # fingerprint changed -> cache must not mask the tamper
+    r = audit.verify_chain(chain_conn)
+    assert r["valid"] is False
+    assert r["broken_at"] == ids[2]
 
 
 def test_tampered_entry_is_detected(chain_conn):
@@ -61,7 +84,7 @@ def test_tampered_entry_is_detected(chain_conn):
         .values(payload={**payload, "combined_risk_score": "0.0000"})
     )
 
-    result = audit.verify_chain(chain_conn)
+    result = audit.verify_chain(chain_conn, use_cache=False)
     assert result["valid"] is False
     assert result["broken_at"] == target
     assert result["entries_checked"] == 3  # entries 1-3 still verify cleanly
@@ -78,6 +101,6 @@ def test_reordering_is_detected(chain_conn):
     chain_conn.execute(update(AuditLog).where(AuditLog.id == ids[1]).values(payload_hash=h3))
     chain_conn.execute(update(AuditLog).where(AuditLog.id == ids[2]).values(payload_hash=h2))
 
-    result = audit.verify_chain(chain_conn)
+    result = audit.verify_chain(chain_conn, use_cache=False)
     assert result["valid"] is False
     assert result["broken_at"] == ids[1]

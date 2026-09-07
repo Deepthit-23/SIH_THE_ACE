@@ -78,8 +78,8 @@ backend/
   app/
     main.py              FastAPI app
     models.py schemas.py database.py config.py
-    routers/            health, meta, projects, risk, patterns, audit
-    audit.py            SHA-256 hash-chain (build / verify)
+    routers/            health, meta, projects, risk, patterns, audit, cases
+    audit.py            SHA-256 hash-chain (build / verify / cache)
     pipeline/
       prepare_data.py   CSV -> Postgres
       inject_anomalies.py  synthetic fraud patterns (internal labels only)
@@ -104,12 +104,17 @@ Verify at http://localhost:8000/docs.
 
 | endpoint | purpose |
 |---|---|
-| `GET /risk-scores` | ranked list — paginated, sortable (risk/amount), filterable (min_score, derived_category, state, district, status) |
-| `GET /projects/{id}` | full project + ordered explanation list (rule + ML reasons) |
+| `GET /risk-scores` | ranked list — sortable, filterable (min_score, category, state, district, status, **case_status**), **`q` free-text search** (MP / work / Work ID) |
+| `GET /risk-scores/export.csv` | flagged list as CSV (same filters), for offline audit work |
+| `GET /projects/{id}` | full project + ordered explanation + score breakdown + case status |
+| `PUT /projects/{id}/case` | set review status (`pending`/`under_review`/`confirmed`/`dismissed`); a note is required to dismiss |
+| `GET /projects/{id}/case`, `GET /projects/{id}/case/history` | current review state / full history (also in the audit chain) |
+| `GET /cases` | case log — every project an auditor has acted on |
 | `GET /patterns/districts`, `GET /patterns/contractors` | cross-entity rankings for the pattern charts |
 | `GET /districts/{d}/pattern`, `GET /contractors/{v}/pattern` | single-entity drill-in |
+| `GET /meta/summary` | national headline figures (allocated / spent / completion / flag counts) |
 | `GET /meta/filters` | filter option lists + score-band counts |
-| `GET /audit/verify` | walk the hash-chain → `{valid, entries_checked, broken_at}` |
+| `GET /audit/verify` | walk the hash-chain → `{valid, entries_checked, broken_at, cached}` (cached on a table fingerprint) |
 
 ## How scoring works
 
@@ -126,11 +131,19 @@ Verify at http://localhost:8000/docs.
    25, stalled 15) + a smooth-knee ML contribution + a cost-z tie-breaker →
    one `combined_risk_score` (0–100) and a single ordered explanation list.
    Bands: **≥ 70 high · 50–69 medium · < 50 low**.
-4. **Audit chain** (`audit.py`) — every `score_projects` run appends one
+4. **Auditor workflow** (`cases.py`) — each project has a review status
+   (`pending → under_review → confirmed → dismissed`), settable from the detail
+   view; dismissing requires a reason. Every change is also appended to the audit
+   hash-chain, so review decisions are as tamper-evident as scores. Dismissal
+   reasons are the feedback loop a production system would use to tune thresholds
+   or retrain (that part is not built — just the logging).
+5. **Audit chain** (`audit.py`) — every `score_projects` run appends one
    SHA-256-chained `audit_log` entry per project:
    `this_hash = sha256(canonical_payload + previous_hash)` (genesis = 64 zeros).
    Altering any past entry breaks every hash after it; `GET /audit/verify`
-   detects it and reports `broken_at`. The dashboard header shows a live
+   detects it and reports `broken_at`. Results are cached on a cheap in-DB table
+   fingerprint (no re-hashing 131k rows per page load; invalidates the instant
+   any row changes). The dashboard header shows a live
    "Audit trail verified ✓" chip.
 
 ## Validation (synthetic anomalies)
@@ -159,10 +172,12 @@ Navigate straight to `/projects/<id>`. Regenerate with
 
 | # | id | what it shows | score |
 |---|---|---|--:|
-| 1 | **131836** | clean **cost inflation** catch — cost rule is the sole driving signal (8.8× the road-paving average for Madurai) + ML "absolute amount is very large" | 93 |
+| 1 | **131498** | clean **cost inflation** catch — the cost rule is the sole driving signal + ML "absolute amount is very large" | 93 |
 | 2 | **60625** | **contractor concentration** — one vendor holds 64% of an MP's transactions in Allahabad, alongside a 30× cost overrun | 96 |
-| 3 | **131951** | **stalled / ghost project** — the deliberately weak signal: recommended 32 months ago, no completion or payment activity, sits at a low score | 15 |
-| 4 | **4708** | **mid-tier combined** — cost rule (4.8×) + ML agreeing, neither conclusive alone, lands in the medium band | 70 |
+| 3 | **131551** | **stalled / ghost project** — the deliberately weak signal: old recommendation, no completion/payment activity, sits at a low score | 15 |
+| 4 | **14741** | **mid-tier combined** — rule + ML together, neither conclusive alone, lands in the medium band | 70 |
+
+_(synthetic ids 1, 3, 4 shift if `inject_anomalies` re-runs; 60625 is a real project and stable.)_
 
 _(synthetic project ids shift if `inject_anomalies` is re-run; ids 60625 and 4708 are real projects and stable.)_
 
@@ -184,7 +199,20 @@ scope honest:
   reach the API can read everything. Not production-ready.
 - **No live scraping.** Data is loaded from static CSV exports.
 - **No MLOps / model retraining pipeline.** The model is retrained in-process on
-  each `score_projects` run with a fixed seed.
+  each `score_projects` run with a fixed seed. Auditor dismissal reasons are
+  *logged* (see the case log) as the feedback such a pipeline would consume — the
+  consumption itself isn't built.
 - **No deep mobile responsiveness.** Designed for a desktop auditor workflow.
+- **No DB migrations (Alembic).** `score_projects` runs additive `ALTER`s /
+  `create_all`; acknowledged tech debt, low prototype value.
+
+### Candidate next steps (not built)
+
+- **Perceptual-hash duplicate-photo detection** across the eSAKSHI work images —
+  novel, but needs the image URLs to be reachable; worth a time-boxed feasibility
+  spike first.
+- **Trend view** — a project's risk score over two data snapshots, turning this
+  from a static report into a monitoring system. Needs a second time-separated
+  export.
 
 Flags are decision-support for auditors, **not** findings of wrongdoing.

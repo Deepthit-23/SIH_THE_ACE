@@ -7,6 +7,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // allow public dev-tunnel hosts (cloudflared / ngrok / localtunnel) to reach
+    // the dev server — Vite otherwise rejects unknown Host headers
+    allowedHosts: [".trycloudflare.com", ".ngrok-free.app", ".ngrok.io", ".loca.lt"],
     proxy: {
       "/api": {
         target: "http://localhost:8000",

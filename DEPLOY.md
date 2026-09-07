@@ -24,13 +24,16 @@ cd frontend && npm install && npm run dev
 ### 1. Postgres + backend on Render
 
 1. **New → PostgreSQL** (free tier). Copy the *Internal Database URL*.
-2. **New → Web Service**, connect the repo, root directory `backend/`.
-   - Environment: **Docker** (uses `backend/Dockerfile`).
-   - Health check path: `/health`.
+2. **New → Web Service**, connect the repo.
+   - **Root Directory:** `backend`  ← required, or Render can't find the Dockerfile
+   - **Runtime / Environment:** **Docker**
+   - **Health Check Path:** `/health`
+   - The container binds to `$PORT` (Render injects it) automatically — no
+     start-command override needed.
    - Env vars:
      | key | value |
      |---|---|
-     | `DATABASE_URL` | the Internal Database URL, with `postgresql://` → `postgresql+psycopg2://` |
+     | `DATABASE_URL` | the Internal Database URL (Render's `postgresql://…` works as-is) |
      | `DATA_DIR` | `/data` |
      | `CORS_ORIGINS` | `https://<your-vercel-app>.vercel.app` (comma-sep for multiple) |
 3. First deploy will start the API with empty tables. Seed it once from the
@@ -61,6 +64,17 @@ cd frontend && npm install && npm run dev
 automatically (rewrite the scheme to `postgresql+psycopg2://`).
 
 ---
+
+## Troubleshooting
+
+| symptom | cause | fix |
+|---|---|---|
+| Deploy fails / stuck "in progress", then 404 or 502 | app not listening on `$PORT` | the Dockerfile now binds `${PORT:-8000}` — redeploy after pulling this commit |
+| Build error "no Dockerfile found" | Root Directory not set | set it to `backend` |
+| `404` at `https://…onrender.com/` root | that's normal only if deploy failed; a live service returns `{"service":"mplad-fraud-detection",…}` at `/`. Check **Logs** → last deploy status |
+| API up but every route 500s | `DATABASE_URL` wrong, or tables not seeded | check logs; run the seed commands below in Render Shell |
+| Frontend loads but no data | `VITE_API_BASE` missing/wrong on Vercel, or backend `CORS_ORIGINS` doesn't list the Vercel URL | set both, redeploy both |
+| Backend logs "SSL required" | using the **external** DB URL without SSL | append `?sslmode=require`, or use the **Internal Database URL** (same Render region, no SSL needed) |
 
 ## Config the app reads
 

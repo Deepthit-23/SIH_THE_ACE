@@ -17,14 +17,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from datetime import datetime, timezone
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select, text
 
 from app.models import AuditLog
 
 GENESIS_HASH = "0" * 64
 EVENT_RISK_SCORE = "risk_score"
+EVENT_CASE_REVIEW = "case_review"
+
+# verify_chain re-hashes every row, so cache the verdict. The cache key is a
+# cheap in-DB fingerprint of the whole table (count + max id + md5 of every
+# hash/link/payload) -- it changes the instant ANY row is altered, so the cache
+# can never mask tampering. TTL is just a periodic re-check backstop.
+_VERIFY_TTL_SECONDS = 300
+_verify_cache: dict = {"fingerprint": None, "result": None, "at": 0.0}
+_verify_lock = threading.Lock()
 
 
 def _sha256(text: str) -> str:
@@ -87,19 +98,24 @@ def append_entries(conn, records: list[tuple], event_type: str = EVENT_RISK_SCOR
     return len(rows)
 
 
-def verify_chain(conn) -> dict:
-    """Walk the full chain, recompute every hash, confirm nothing was altered.
+def _table_fingerprint(conn) -> str:
+    """One cheap query that changes if any audit_log row is added or altered."""
+    return conn.execute(
+        text(
+            "SELECT count(*)::text || ':' || COALESCE(max(id), 0)::text || ':' || "
+            "COALESCE(md5(string_agg("
+            "  payload_hash || previous_hash || COALESCE(payload::text, ''), '|' ORDER BY id"
+            ")), 'empty') FROM audit_log"
+        )
+    ).scalar()
 
-    Returns {"valid": bool, "entries_checked": int, "broken_at": id | None}.
-    `broken_at` is the id of the first entry whose stored hash or back-link does
-    not match the recomputation.
-    """
+
+def _walk_chain(conn) -> dict:
     rows = conn.execute(
         select(
             AuditLog.id, AuditLog.payload, AuditLog.payload_hash, AuditLog.previous_hash
         ).order_by(AuditLog.id)
     ).all()
-
     prev = GENESIS_HASH
     checked = 0
     for r in rows:
@@ -108,3 +124,59 @@ def verify_chain(conn) -> dict:
         prev = r.payload_hash
         checked += 1
     return {"valid": True, "entries_checked": checked, "broken_at": None}
+
+
+def append_case_event(
+    conn, project_id: int, status: str, note: str | None, reviewer: str | None, ts: datetime
+) -> str:
+    """Append one chained `case_review` entry. Same chain as scoring events."""
+    prev = last_hash(conn)
+    payload = {
+        "event": EVENT_CASE_REVIEW,
+        "project_id": int(project_id),
+        "status": status,
+        "note_sha256": _sha256(note or ""),
+        "reviewer": (reviewer or "").strip(),
+        "timestamp": ts.astimezone(timezone.utc).isoformat(),
+    }
+    h = chain_hash(payload, prev)
+    conn.execute(
+        insert(AuditLog),
+        [{
+            "event_type": EVENT_CASE_REVIEW,
+            "project_id": int(project_id),
+            "payload": payload,
+            "payload_hash": h,
+            "previous_hash": prev,
+            "timestamp": ts,
+        }],
+    )
+    return h
+
+
+def verify_chain(conn, use_cache: bool = True) -> dict:
+    """Walk the full chain, recompute every hash, confirm nothing was altered.
+
+    Returns {"valid", "entries_checked", "broken_at", "cached", "checked_at"}.
+    Cached on a table fingerprint (+ TTL); pass use_cache=False to force a walk.
+    """
+    if not use_cache:
+        result = _walk_chain(conn)
+        return {**result, "cached": False, "checked_at": _now_iso()}
+
+    fp = _table_fingerprint(conn)
+    now = time.time()
+    with _verify_lock:
+        c = _verify_cache
+        if c["fingerprint"] == fp and (now - c["at"]) < _VERIFY_TTL_SECONDS:
+            return {**c["result"], "cached": True, "checked_at": c["checked_at"]}
+
+    result = _walk_chain(conn)
+    checked_at = _now_iso()
+    with _verify_lock:
+        _verify_cache.update(fingerprint=fp, result=result, at=now, checked_at=checked_at)
+    return {**result, "cached": False, "checked_at": checked_at}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")

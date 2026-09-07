@@ -12,9 +12,10 @@ function qs(params = {}) {
   return str ? `?${str}` : "";
 }
 
-async function request(path) {
+async function request(path, opts = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    ...opts,
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -27,16 +28,26 @@ async function request(path) {
     }
     throw new Error(`${res.status} — ${detail}`);
   }
-  return res.json();
+  return res.status === 204 ? null : res.json();
 }
 
 export const api = {
+  base: BASE,
+  qs,
   health: () => request("/health"),
   filters: () => request("/meta/filters"),
+  summary: () => request("/meta/summary"),
   auditVerify: () => request("/audit/verify"),
 
   riskScores: (params) => request(`/risk-scores${qs(params)}`),
+  exportCsvUrl: (params) => `${BASE}/risk-scores/export.csv${qs(params)}`,
   project: (id) => request(`/projects/${id}`),
+
+  getCase: (id) => request(`/projects/${id}/case`),
+  setCase: (id, body) =>
+    request(`/projects/${id}/case`, { method: "PUT", body: JSON.stringify(body) }),
+  caseHistory: (id) => request(`/projects/${id}/case/history`),
+  cases: (params) => request(`/cases${qs(params)}`),
 
   rankDistricts: (params) => request(`/patterns/districts${qs(params)}`),
   rankContractors: (params) => request(`/patterns/contractors${qs(params)}`),

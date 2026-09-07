@@ -39,8 +39,8 @@ CATEGORY_RULES: list[tuple[str, list[str]]] = [
         "road_paving",
         [
             "road", "cc road", "rcc road", "pcc road", "interlocking", "paver",
-            "paver block", "footpath", "foot path", "pathway", "culvert", "pulia",
-            "sadak", "khadanja", "cement concrete road", "black top", "bitumen",
+            "paver block", "paving", "footpath", "foot path", "pathway", "culvert",
+            "pulia", "sadak", "khadanja", "cement concrete road", "black top", "bitumen",
         ],
     ),
     (
@@ -73,7 +73,11 @@ CATEGORY_RULES: list[tuple[str, list[str]]] = [
         "health_facility",
         [
             "hospital", "health centre", "health center", "phc", "chc", "dispensary",
-            "sub centre", "sub center", "ambulance", "aarogya", "clinic",
+            "sub centre", "sub center", "ambulance", "clinic",
+            # "Ayushman Arogya Mandir" / "Aarogya Mandir" are health & wellness
+            # centres -- must be matched here (before "mandir" below), see audit.
+            "aarogya", "arogya", "ayushman", "aayushman", "wellness centre",
+            "wellness center", "health and wellness", "hwc",
         ],
     ),
     (

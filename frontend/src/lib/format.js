@@ -63,3 +63,18 @@ export function titleCase(s) {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 }
+
+export const CASE_STATUS = {
+  pending: { label: "Pending", chip: "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-400/30" },
+  under_review: { label: "Under review", chip: "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20" },
+  confirmed: { label: "Confirmed", chip: "bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20" },
+  dismissed: { label: "Dismissed", chip: "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20" },
+};
+
+export const CASE_ORDER = ["pending", "under_review", "confirmed", "dismissed"];
+
+export function fmtDateTime(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+}
