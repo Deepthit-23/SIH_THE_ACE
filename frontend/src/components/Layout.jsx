@@ -7,11 +7,14 @@ const NAV = [
   { to: "/early-warning", label: "Early warning" },
   { to: "/patterns", label: "District / contractor patterns" },
   { to: "/cases", label: "Case log" },
+  { to: "/admin/users", label: "User Management", ministryOnly: true },
 ];
 
 export default function Layout({ children, session, onLogout }) {
   const role = session.role;
-  const visibleNav = NAV.filter((item) => !(role === "mp_self" && item.to === "/cases"));
+  const visibleNav = NAV.filter(
+    (item) => !(role === "mp_self" && item.to === "/cases") && !(item.ministryOnly && role !== "ministry"),
+  );
   return (
     <div className="flex min-h-screen flex-col">
       <header className="border-b border-slate-200 bg-white">

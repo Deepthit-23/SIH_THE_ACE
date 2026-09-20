@@ -147,7 +147,7 @@ docker compose exec backend python -m app.pipeline.sanity_report
 docker compose exec backend python -m app.pipeline.evaluate_rules
 docker compose exec backend python -m app.pipeline.evaluate_ml
 docker compose exec backend python -m app.pipeline.demo_anchors
-docker compose exec backend python -m pytest        # 101 tests
+docker compose exec backend python -m pytest        # 118 tests
 ```
 
 > `demo_anchors` writes `data/processed/demo_anchors.md`: one project per anomaly type plus a

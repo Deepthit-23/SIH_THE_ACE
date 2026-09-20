@@ -18,11 +18,11 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import get_db
+from app.database import engine, get_db
 from app.models import Project, User
 
 ROLES = {"ministry", "state_nodal", "district_authority", "mp_self"}
@@ -58,8 +58,23 @@ def make_token(user: User) -> str:
     )
 
 
+def ensure_user_columns() -> None:
+    """Additive, idempotent upgrade of an existing `users` table (no Alembic in this project):
+    databases created before user management get the new columns with safe defaults."""
+    with engine.begin() as c:
+        c.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true"))
+        c.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false"))
+        c.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now()"))
+
+
 def seed_demo_users(db: Session) -> None:
-    """Idempotent: create missing demo users, and re-sync role/scope of existing ones."""
+    """Idempotent: create missing demo users, and re-sync role/scope of existing ones.
+
+    Deliberately leaves is_active / password / must_change_password of existing accounts alone,
+    so a Ministry decision (deactivation, changed password) is not silently undone at restart.
+    """
+    db.rollback()  # end any open transaction before the DDL below
+    ensure_user_columns()
     for username, password, role, scope in DEMO_USERS:
         user = db.scalar(select(User).where(User.username == username))
         if user is None:
@@ -70,8 +85,9 @@ def seed_demo_users(db: Session) -> None:
     db.commit()
 
 
-def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
-                 db: Session = Depends(get_db)) -> User:
+def _load_user(credentials: HTTPAuthorizationCredentials | None, db: Session) -> User:
+    """Authenticate the bearer token and return an ACTIVE account (re-read from the DB on every
+    request, so deactivating a user kills their existing tokens immediately)."""
     if not credentials:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
     try:
@@ -83,6 +99,22 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
     user = db.scalar(select(User).where(User.username == username))
     if not user or user.role not in ROLES:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid account")
+    if not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "account deactivated")
+    return user
+
+
+def current_user_any(credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+                     db: Session = Depends(get_db)) -> User:
+    """Authenticated + active, INCLUDING accounts that still owe a password change. Only
+    /auth/me and /auth/change-password use this; everything else uses `current_user`."""
+    return _load_user(credentials, db)
+
+
+def current_user(user: User = Depends(current_user_any)) -> User:
+    """Authenticated + active + has completed the forced first-login password change."""
+    if user.must_change_password:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "password_change_required")
     return user
 
 

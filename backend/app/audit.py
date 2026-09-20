@@ -28,6 +28,7 @@ from app.models import AuditLog
 GENESIS_HASH = "0" * 64
 EVENT_RISK_SCORE = "risk_score"
 EVENT_CASE_REVIEW = "case_review"
+EVENT_ADMIN_ACTION = "admin_action"
 
 # verify_chain re-hashes every row, so cache the verdict. The cache key is a
 # cheap in-DB fingerprint of the whole table (count + max id + md5 of every
@@ -145,6 +146,41 @@ def append_case_event(
         [{
             "event_type": EVENT_CASE_REVIEW,
             "project_id": int(project_id),
+            "payload": payload,
+            "payload_hash": h,
+            "previous_hash": prev,
+            "timestamp": ts,
+        }],
+    )
+    return h
+
+
+def append_admin_event(
+    conn, action: str, actor: str, target_username: str, target_role: str,
+    target_scope: str | None, ts: datetime, detail: str | None = None,
+) -> str:
+    """Append one chained `admin_action` entry (user provisioning). Same chain as scores and cases.
+
+    Only identifiers go in: never a password, a hash, or any credential. `detail` is a short
+    non-secret note (e.g. "must change password at next login").
+    """
+    prev = last_hash(conn)
+    payload = {
+        "event": EVENT_ADMIN_ACTION,
+        "action": action,
+        "actor": actor,
+        "target_username": target_username,
+        "target_role": target_role,
+        "target_scope": target_scope or "",
+        "detail": detail or "",
+        "timestamp": ts.astimezone(timezone.utc).isoformat(),
+    }
+    h = chain_hash(payload, prev)
+    conn.execute(
+        insert(AuditLog),
+        [{
+            "event_type": EVENT_ADMIN_ACTION,
+            "project_id": None,
             "payload": payload,
             "payload_hash": h,
             "previous_hash": prev,

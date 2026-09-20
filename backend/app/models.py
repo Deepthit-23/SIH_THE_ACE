@@ -173,6 +173,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     scope_value: Mapped[str | None] = mapped_column(String(255))
+    # Provisioning state (Ministry user management). Existing rows default to active / no forced change,
+    # so the seeded demo accounts keep working. Added to old databases by auth.ensure_user_columns().
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class RiskFlag(Base):

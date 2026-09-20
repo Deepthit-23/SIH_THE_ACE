@@ -34,6 +34,7 @@ async function request(path, opts = {}) {
     } catch {
       /* non-JSON error body */
     }
+    if (res.status === 403 && detail === "password_change_required") window.location.reload();
     throw new Error(`${res.status} — ${detail}`);
   }
   return res.status === 204 ? null : res.json();
@@ -45,6 +46,14 @@ export const api = {
   health: () => request("/health"),
   login: (username, password) => request("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   me: () => request("/auth/me"),
+  changePassword: (current_password, new_password) =>
+    request("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),
+
+  // Ministry-only user management (the backend enforces the role; the UI just hides it)
+  adminUsers: () => request("/admin/users"),
+  createUser: (body) => request("/admin/users", { method: "POST", body: JSON.stringify(body) }),
+  patchUser: (id, body) => request(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  scopeOptions: (kind, q) => request(`/admin/scope-options${qs({ kind, q })}`),
   filters: () => request("/meta/filters"),
   summary: () => request("/meta/summary"),
   auditVerify: () => request("/audit/verify"),

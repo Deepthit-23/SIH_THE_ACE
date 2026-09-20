@@ -22,7 +22,10 @@ export function loadSession() {
 }
 
 export function saveSession(r) {
-  const profile = { username: r.username, role: r.role, scope_value: r.scope_value, scope_label: r.scope_label };
+  const profile = {
+    username: r.username, role: r.role, scope_value: r.scope_value, scope_label: r.scope_label,
+    must_change_password: !!r.must_change_password,
+  };
   localStorage.setItem("mplad_token", r.access_token);
   localStorage.setItem("mplad_role", r.role);
   localStorage.setItem("mplad_profile", JSON.stringify(profile));
@@ -31,4 +34,14 @@ export function saveSession(r) {
 
 export function clearSession() {
   KEYS.forEach((k) => localStorage.removeItem(k));
+}
+
+/** Refresh the stored profile (e.g. after the forced password change clears must_change_password). */
+export function updateProfile(r) {
+  const profile = {
+    username: r.username, role: r.role, scope_value: r.scope_value, scope_label: r.scope_label,
+    must_change_password: !!r.must_change_password,
+  };
+  localStorage.setItem("mplad_profile", JSON.stringify(profile));
+  return profile;
 }

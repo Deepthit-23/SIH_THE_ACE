@@ -65,7 +65,7 @@ docker compose down -v && docker compose up -d --build   # wipes the DB volume
 ### Optional — validation reports & tests
 
 ```bash
-docker compose exec backend python -m pytest                       # 99 tests incl. RBAC
+docker compose exec backend python -m pytest                       # 118 tests incl. RBAC + user management
 docker compose exec backend python -m app.pipeline.sanity_report   # -> data/processed/sanity_report.md
 docker compose exec backend python -m app.pipeline.evaluate_rules  # -> data/processed/rule_eval.md
 docker compose exec backend python -m app.pipeline.evaluate_ml     # -> data/processed/ml_eval.md
@@ -114,6 +114,8 @@ Verify at http://localhost:8000/docs.
 | `GET /districts/{d}/pattern`, `GET /contractors/{v}/pattern` | single-entity drill-in |
 | `GET /meta/summary` | national headline figures (allocated / spent / completion / flag counts) |
 | `GET /meta/filters` | filter option lists + score-band counts |
+| `GET /admin/users`, `POST /admin/users`, `PATCH /admin/users/{id}`, `GET /admin/scope-options` | **Ministry only** (403 for every other role): list / create / deactivate-reactivate-reset-password users; scope choices from the data |
+| `POST /auth/change-password` | self-service; the only way out of `must_change_password` |
 | `GET /audit/verify` | walk the hash-chain → `{valid, entries_checked, broken_at, cached}` (cached on a table fingerprint) |
 
 ## How scoring works
@@ -282,6 +284,33 @@ Flags are decision-support for auditors, **not** findings of wrongdoing.
 | MP self | `mp_demo` | `DemoMP!2026` | Abhishek Manu Singhvi |
 
 Passwords are bcrypt-hashed and JWTs are verified server-side. Replace the demo JWT secret and all accounts before any non-demo use. State and district users may confirm/dismiss cases within their scope; the ministry can override any decision (a ministry decision is locked against non-ministry users); MP accounts are read-only. Scope is enforced server-side on every endpoint (exact, case-insensitive match on state / district / MP name).
+
+## User management (Ministry only)
+
+The Ministry role can provision accounts from the **User Management** page (nav item shown to the
+Ministry only) or the `/admin/*` API:
+
+- **Create** (username, role, scope, temporary password). The scope is validated against the real
+  data (a state / district / MP that does not exist is rejected, and it is stored in the data's own
+  casing), the password is bcrypt-hashed, and the account is flagged `must_change_password`.
+- **Deactivate / reactivate**: takes effect on the very next request, including for tokens already
+  issued (every request re-reads the account). You cannot deactivate yourself or the last active
+  Ministry account.
+- **Reset password**: sets a new temporary password and forces a change at next sign-in.
+- **First login**: until the temporary password is replaced, the server answers `403
+  password_change_required` on every endpoint except `/auth/me` and `/auth/change-password`, so this
+  is enforced server-side, not just by the UI. There is no password-policy engine: minimum 8
+  characters and it must differ from the temporary one.
+- **Audit**: every create / deactivate / reactivate / reset appends an `admin_action` entry to the
+  same SHA-256 hash-chain as scores and case reviews, in the same transaction as the change (actor,
+  target, role, scope; never a password or hash). A user's own password change is not an admin
+  action and is not chained.
+- The four demo accounts stay seeded. Startup adds any missing ones but does not touch an existing
+  account's password or active flag, so a Ministry decision is not undone by a restart.
+- Existing databases are upgraded in place (`ALTER TABLE users ADD COLUMN IF NOT EXISTS ...`, run at
+  startup); a dump taken before this feature restores fine and upgrades when the backend next starts.
+- The temporary password is shown to the admin once, in the browser, so it can be handed over out of
+  band; there is no email/SMS delivery.
 
 ## Pipeline
 

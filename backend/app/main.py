@@ -13,7 +13,7 @@ from app.database import Base, engine
 from app import models  # noqa: F401
 from app.auth import seed_demo_users
 from app.database import SessionLocal
-from app.routers import audit, auth, cases, health, meta, patterns, projects, risk
+from app.routers import admin, audit, auth, cases, health, meta, patterns, projects, risk
 
 logger = logging.getLogger("uvicorn")
 
@@ -61,6 +61,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(admin.router)
 app.include_router(meta.router)
 app.include_router(projects.router)
 app.include_router(risk.router)
