@@ -144,6 +144,37 @@ class MpSummary(Base):
     )
 
 
+class MpAllocation(Base):
+    """Official SIH allocation ceiling extracted from the supplied PDFs.
+
+    This is deliberately separate from ``mp_summary.allocated_amount``: the
+    latter is sourced from empoweredindian.in's MPLADS export and is used only
+    for reconciliation, never as a replacement for this official ceiling.
+    """
+    __tablename__ = "mp_allocation"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    mp_name: Mapped[str] = mapped_column(String(255), index=True)
+    state: Mapped[str | None] = mapped_column(String(128), index=True)
+    house: Mapped[str] = mapped_column(String(32), index=True)
+    constituency: Mapped[str | None] = mapped_column(String(255))
+    is_nominated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    term_start: Mapped[int | None] = mapped_column(Integer)
+    term_end: Mapped[int | None] = mapped_column(Integer)
+    # One official Lok Sabha source row has no published amount; preserve the
+    # row and make downstream ceiling checks explicitly non-applicable.
+    official_allocated_ceiling: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+
+
+class User(Base):
+    """Prototype accounts. Password hashes only; plaintext credentials are never stored."""
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    scope_value: Mapped[str | None] = mapped_column(String(255))
+
+
 class RiskFlag(Base):
     """Computed risk assessment for a project (rule engine + ML combined)."""
 

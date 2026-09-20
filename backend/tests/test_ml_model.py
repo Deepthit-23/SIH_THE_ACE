@@ -78,3 +78,30 @@ def test_extreme_row_scores_higher_and_is_explained():
 
     reasons = ml_model.explain_projects(X, [extreme_id], ml_model.population_stats(X))
     assert isinstance(reasons[extreme_id], str) and reasons[extreme_id]
+
+
+def test_allocation_and_duplicate_signals_enter_the_feature_matrix():
+    proj = _projects()
+    ids = proj["id"].tolist()
+    ceiling = pd.DataFrame({"ceiling_utilization": [1.3] + [0.6] * (len(ids) - 1)},
+                           index=pd.Index(ids, name="project_id"))
+    dup = pd.DataFrame({"max_similarity": [97.0] + [0.0] * (len(ids) - 1)},
+                       index=pd.Index(ids, name="project_id"))
+    X = ml_model.build_feature_matrix(proj, _vtx(), _mps(), ceiling=ceiling, duplicate=dup)
+    assert X.loc[ids[0], "ceiling_utilization"] == 1.3
+    assert X.loc[ids[0], "dup_max_similarity"] == 97.0
+    assert X.loc[ids[1], "dup_max_similarity"] == 0.0
+    assert "is_synthetic_anomaly" not in X.columns and "anomaly_type" not in X.columns
+
+
+def test_missing_rule_frames_default_safely():
+    X = ml_model.build_feature_matrix(_projects(), _vtx(), _mps())
+    assert (X["dup_max_similarity"] == 0).all()
+    assert X["ceiling_utilization"].notna().all()
+
+
+def test_scoring_is_deterministic():
+    X = ml_model.build_feature_matrix(_projects(extreme=True), _vtx(), _mps())
+    a = ml_model.score(ml_model.train_isolation_forest(X), X)
+    b = ml_model.score(ml_model.train_isolation_forest(X), X)
+    pd.testing.assert_frame_equal(a, b)

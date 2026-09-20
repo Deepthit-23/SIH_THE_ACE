@@ -39,8 +39,8 @@ docker compose up -d --build          # ~3-4 min first build
 curl -sf http://localhost:8000/health # wait for {"status":"ok","database":"ok"}
 
 # 2. build the data + scores  (each step is idempotent; run in this order)
-docker compose exec backend python -m app.pipeline.prepare_data --reset      # load CSVs  (~30s)
-docker compose exec backend python -m app.pipeline.inject_anomalies --clear  # synthetic anomalies
+docker compose exec backend python -m app.pipeline.prepare_data --reset      # load CSVs + official allocation PDFs + demo users
+docker compose exec backend python -m app.pipeline.inject_anomalies --clear  # synthetic anomalies (all 6 types)
 docker compose exec backend python -m app.pipeline.score_projects            # rules + ML -> risk_flags + audit chain
 
 # 3. frontend
@@ -65,7 +65,7 @@ docker compose down -v && docker compose up -d --build   # wipes the DB volume
 ### Optional — validation reports & tests
 
 ```bash
-docker compose exec backend python -m pytest                       # 35 tests
+docker compose exec backend python -m pytest                       # 99 tests incl. RBAC
 docker compose exec backend python -m app.pipeline.sanity_report   # -> data/processed/sanity_report.md
 docker compose exec backend python -m app.pipeline.evaluate_rules  # -> data/processed/rule_eval.md
 docker compose exec backend python -m app.pipeline.evaluate_ml     # -> data/processed/ml_eval.md
@@ -118,19 +118,34 @@ Verify at http://localhost:8000/docs.
 
 ## How scoring works
 
-1. **Rule engine** (`rules.py`) — 4 independent rules, each returns a boolean + a
-   plain-language reason: cost anomaly (z-score vs `derived_category`+district
-   peers), contractor concentration (one vendor's share of an MP's transactions),
-   stalled/ghost project (old recommendation + no completion/payment activity +
-   low-delivery MP), payment gap (in-progress payment share vs MP utilisation).
-2. **Isolation Forest** (`ml_model.py`) — unsupervised, trained on 28 engineered
-   features. The synthetic-anomaly labels are **never** a model input (evaluation
-   only). Explanation = top feature deviations from the population, in plain
-   language.
-3. **Combiner** (`risk_scorer.py`) — rule points (cost 40, contractor 30, payment
-   25, stalled 15) + a smooth-knee ML contribution + a cost-z tie-breaker →
-   one `combined_risk_score` (0–100) and a single ordered explanation list.
-   Bands: **≥ 70 high · 50–69 medium · < 50 low**.
+1. **Rule engine** (`rules.py`) — six independent rules, each a boolean + a
+   plain-language reason:
+   cost anomaly (z-score vs `derived_category`+district peers), contractor
+   concentration (one vendor's share of an MP's transactions), stalled/ghost project
+   (old recommendation, no completion/payment activity; suppressed for MPs in office
+   < 18 months), payment gap (in-progress payment share vs utilisation),
+   **allocation ceiling breach** (MP's committed total vs the *official* ceiling from the
+   supplied PDFs; projects are taken in date order with a running total, and only those that push it past the ceiling (2% tolerance) are flagged; MPs with no official ceiling are
+   not-applicable rather than zero) and **duplicate work** (same MP + constituency,
+   near-identical *rare-token* description, amounts within 15% **and** dates >= 30 days
+   apart; generic phrases and corpus-common words are stripped so boilerplate cannot
+   drive a match; series such as "Sl. No. 1-150" vs "151-300" and same-Work-ID pairs are
+   not duplicates).
+2. **Isolation Forest** (`ml_model.py`) — unsupervised, 30 engineered features
+   (including ceiling utilisation and duplicate max-similarity: the rules' *raw* signals, never
+   their flags). The synthetic-anomaly labels are **never** a model input. Explanation =
+   ranked feature deviations in plain language; fragments a fired rule already states are dropped.
+3. **Combiner** (`risk_scorer.py`) — rule points, **measured rather than guessed**: points fall
+   log-linearly with the flag rate on real rows, anchored on cost 2.2% -> 40 and stalled 8.5% -> 15,
+   capped at 45. Result: ceiling 45, cost 40, contractor 30, payment 25, stalled 15, and duplicate 35.
+   **Duplicate's 35 is a deliberate manual override, not the formula's output** (which was ~49-50,
+   i.e. 45 after the cap). Flag rate is only a proxy for false-positive rate, and review of the
+   flagged samples found many plausible legitimate repeat purchases even after the text,
+   amount, boilerplate and date-gap filters. 35 keeps duplicate below cost anomaly (40, the
+   longer-scrutinised rule) while still above payment gap (25) and stalled (15).
+   Plus a smooth-knee ML contribution (only where it can show a reason) and a cost-z tie-breaker
+   -> one `combined_risk_score` (0-100) and one ordered explanation list.
+   Bands: **>= 70 high · 50-69 medium · < 50 low**.
 4. **Auditor workflow** (`cases.py`) — each project has a review status
    (`pending → under_review → confirmed → dismissed`), settable from the detail
    view; dismissing requires a reason. Every change is also appended to the audit
@@ -148,21 +163,48 @@ Verify at http://localhost:8000/docs.
 
 ## Validation (synthetic anomalies)
 
-Real MPLAD fraud isn't labelled, so `inject_anomalies` appends ~400 synthetic
-project rows + ~1,800 synthetic vendor transactions with realistic-but-extreme
-patterns, tagged `is_synthetic_anomaly` / `anomaly_type` **internally only** —
-never exposed via API or UI. Scoring is deterministic (fixed seed, `ORDER BY id`
-loads). Latest run (`data/processed/rule_eval.md` / `ml_eval.md`):
+Real MPLAD fraud isn't labelled, so `inject_anomalies` appends synthetic rows for **all six**
+rule types, tagged `is_synthetic_anomaly` / `anomaly_type` **internally only** — never in any
+API payload (asserted by test). Scoring is deterministic (fixed seed, `ORDER BY id`; verified by
+scoring twice and diffing). Latest run (`data/processed/rule_eval.md` / `ml_eval.md`); FP = flagged
+share of *real* rows, excluding units that host injected cases:
 
-| anomaly type | rule recall | + ML (combined) | FP (real) |
-|---|--:|--:|--:|
-| cost_inflation | 80.8% | 86.8% | cost rule 2.2% |
-| stalled_project | 66.7% | 68.0% | stalled rule 8.5% |
-| contractor_concentration | 100% (8/8 MP units) | 100% | 0.6% of groups |
-| payment_gap | 100% (6/6 MP units) | 100% | 2.9% of groups |
+| anomaly type | injected | rule recall | + ML (combined) | FP on real data |
+|---|--:|--:|--:|--:|
+| cost_inflation | 250 | 81.6% | 90.0% | 2.2% of projects |
+| stalled_project | 150 | 68.0% | 70.0% | 8.5% of recommended |
+| allocation_ceiling_breach | 96 projects / 12 MPs | 100% of MPs (12/12); crossing rows may be real later-dated projects | 100% of MPs | 1 real project outside host MPs (1 of 720 MPs) |
+| duplicate_work | 120 | 82.5% | 82.5% | 1.3% of projects |
+| contractor_concentration | 8 MP units | 100% | 100% | 0.6% of groups |
+| payment_gap | 6 MP units | 100% | 100% | 2.9% of groups |
 
-Combined `score ≥ 70` flags **2.2%** of real projects; ML adds **17** synthetic
-anomalies the rules missed (15 cost, 2 stalled).
+Notes on the two newer rules:
+
+- **Duplicate work** was tuned against real data: text-only matching flagged **41.1%** of real
+  projects; adding the amount gate + rare-token filter -> 6.6%; adding the 30-day date gap -> **1.3%**.
+  Much of what remains is still plausibly legitimate repeat purchasing, so treat it as a review
+  prompt. Recall misses (21/120) are short descriptions with < 2 distinctive tokens — by design.
+- **Ceiling breach** flags only the projects that push an MP's date-ordered running total past
+  the official ceiling (the crossing project and any later ones adding to the excess); the
+  portfolio committed before the crossing is not flagged. This cut ceiling flags from 3,675 to 383
+  rows and the combined `>= 70` count from 5,426 to 4,078. Injected fixtures other than the
+  breach cases are excluded from the running total.
+- **Official-ceiling matching**: works-data MPs are matched to the PDFs by normalising both sides
+  (honorifics, "(2026-32)" suffixes, case, punctuation), then same-state fuzzy for the remainder:
+  732 of 733 MPs (99.93% of projects). The one unmatched MP (Dr. Dinesh Sharma, UP Rajya Sabha,
+  term 2023-26) is not in the official list. One official row (Chavan Vasantrao Balwantrao) has no
+  published ceiling. See `data/processed/allocation_reconciliation.md` and `allocation_discrepancies.csv`.
+
+- **Open question — Delkar's ceiling.** Both Lok Sabha seats of Dadra & Nagar Haveli and Daman &
+  Diu are present in the works data, `mp_summary` and the official PDF (Kalaben Mohanbhai Delkar,
+  Dadra & Nagar Haveli, 2 works; Patel Umeshbhai Babubhai, Daman & Diu, 61 works), so neither is
+  missing or unmatched. Delkar's official ceiling is Rs 26.95 Cr (1.83x the standard Rs 14.70 Cr)
+  while `mp_summary` holds Rs 14.70 Cr for her; **this difference is unexplained from the
+  available sources.** The ceiling rule uses the official figure as published. All eleven MPs whose
+  `mp_summary` allocation differs from the official one have the official figure higher
+  (`data/processed/allocation_discrepancies.csv`); the cause is likewise not established.
+
+Combined `score >= 70` flags **2.9%** of real projects (3,864 of 131,300).
 
 ## Demo anchor projects
 
@@ -170,16 +212,23 @@ Navigate straight to `/projects/<id>`. Regenerate with
 `docker compose exec backend python -m app.pipeline.demo_anchors`
 (→ `data/processed/demo_anchors.md`) after any pipeline re-run.
 
-| # | id | what it shows | score |
+| anchor | id | what it shows | score |
 |---|---|---|--:|
-| 1 | **131498** | clean **cost inflation** catch — the cost rule is the sole driving signal + ML "absolute amount is very large" | 93 |
-| 2 | **60625** | **contractor concentration** — one vendor holds 64% of an MP's transactions in Allahabad, alongside a 30× cost overrun | 96 |
-| 3 | **131551** | **stalled / ghost project** — the deliberately weak signal: old recommendation, no completion/payment activity, sits at a low score | 15 |
-| 4 | **14741** | **mid-tier combined** — rule + ML together, neither conclusive alone, lands in the medium band | 70 |
+| cost anomaly | **131836** | cost 8.8x the road-paving average; cost rule is the driving signal | 95 |
+| contractor concentration | **60625** | one vendor holds 64% of an MP's transactions, alongside a 30x cost overrun | 96 |
+| stalled / ghost | **131953** | the deliberately weak signal (15 points): old recommendation, no activity | 15 |
+| payment gap | **131799** | 89% of the MP's payment value still in-progress | 96 |
+| ceiling breach | **132186** | the project that pushed the MP's running total past the official ceiling (ceiling rule alone) | 72 |
+| duplicate work | **132303** | near-identical re-claim of an earlier work (counterpart **39444**); weight 35 | 76 |
+| ML-only (new features) | **9356** | no rule fired; the model cites duplicate similarity | 78 |
 
-_(synthetic ids 1, 3, 4 shift if `inject_anomalies` re-runs; 60625 is a real project and stable.)_
+Role walkthrough (each opens with the demo account for that role; scope walls verified against the
+live API): **Ministry** 124738 (outside every other demo scope, three rules incl. duplicate),
+**State** 83123 (Telangana), **District** 10360 (Hyderabad), **MP** 176 (Singhvi's portfolio).
+Full detail, the access matrix and the case-review script: `data/processed/demo_anchors.md`.
 
-_(synthetic project ids shift if `inject_anomalies` is re-run; ids 60625 and 4708 are real projects and stable.)_
+_(synthetic project ids shift if `inject_anomalies` re-runs; regenerate `demo_anchors` afterwards.
+Real projects such as 60625, 10360, 83123, 176 and 124738 keep their ids.)_
 
 ## Deployment
 
@@ -195,8 +244,9 @@ scope honest:
 
 - **No real blockchain / distributed ledger.** The `audit_log` hash-chain is a
   single-writer demonstration of tamper-evidence — no consensus, no replication.
-- **No authentication / authorization / security hardening.** Anyone who can
-  reach the API can read everything. Not production-ready.
+- **No production security hardening.** Auth is real (bcrypt + JWT, server-side role/scope
+  enforcement) but uses seeded demo accounts and a demo JWT secret; no OAuth/SSO, rate limiting
+  or secret management. Not production-ready.
 - **No live scraping.** Data is loaded from static CSV exports.
 - **No MLOps / model retraining pipeline.** The model is retrained in-process on
   each `score_projects` run with a fixed seed. Auditor dismissal reasons are
@@ -216,3 +266,27 @@ scope honest:
   export.
 
 Flags are decision-support for auditors, **not** findings of wrongdoing.
+# MPLAD anomaly & fraud detection prototype
+
+## Data provenance
+
+`mp_summary` is derived from public MPLADS exports obtained via empoweredindian.in. It is not the official SIH allocation source. `mp_allocation` is populated only from the supplied official SIH PDFs (`Allocated_Limit_for_Honble_MPs__1_.pdf` and `...__2_.pdf`); the ingestion command writes a match-rate and reconciliation report instead of silently merging discrepancies.
+
+## Demo access (prototype only)
+
+| Role | Username | Password | Scope |
+|---|---|---|---|
+| Ministry | `ministry_demo` | `DemoMinistry!2026` | National |
+| State nodal | `state_demo` | `DemoState!2026` | Telangana |
+| District authority | `district_demo` | `DemoDistrict!2026` | HYDERABAD |
+| MP self | `mp_demo` | `DemoMP!2026` | Abhishek Manu Singhvi |
+
+Passwords are bcrypt-hashed and JWTs are verified server-side. Replace the demo JWT secret and all accounts before any non-demo use. State and district users may confirm/dismiss cases within their scope; the ministry can override any decision (a ministry decision is locked against non-ministry users); MP accounts are read-only. Scope is enforced server-side on every endpoint (exact, case-insensitive match on state / district / MP name).
+
+## Pipeline
+
+Run in this order: `docker compose exec backend python -m app.pipeline.prepare_data --reset` (loads CSVs, ingests the official allocation PDFs, seeds demo users); `docker compose exec backend python -m app.pipeline.inject_anomalies --clear`; `docker compose exec backend python -m app.pipeline.score_projects`; `docker compose exec backend python -m app.pipeline.evaluate_rules`.
+
+## Out of scope
+
+Real-time source integration, production OAuth/secret management, perceptual image hashing, and a genuine historical trend series are deliberately not implemented. Risk flags remain append-oriented; the interface must say when only one snapshot is available.

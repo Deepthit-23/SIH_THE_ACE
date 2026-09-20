@@ -21,6 +21,13 @@ scikit-learn==1.6.0
 # Rule engine (Phase 3) — fuzzy text matching for the stalled/ghost-project rule
 rapidfuzz==3.10.1
 
+# Auth & Security (Section 4 RBAC)
+pyjwt>=2.8.0
+bcrypt>=4.0.0
+
+# PDF parsing (Section 1)
+pdfplumber>=0.10.0
+
 # Tests
 pytest==8.3.4
 httpx==0.28.1

@@ -11,7 +11,9 @@ from app.database import Base, engine
 
 # Import models so they are registered on Base.metadata before create_all.
 from app import models  # noqa: F401
-from app.routers import audit, cases, health, meta, patterns, projects, risk
+from app.auth import seed_demo_users
+from app.database import SessionLocal
+from app.routers import audit, auth, cases, health, meta, patterns, projects, risk
 
 logger = logging.getLogger("uvicorn")
 
@@ -25,6 +27,11 @@ async def lifespan(app: FastAPI):
     for attempt in range(1, 13):
         try:
             Base.metadata.create_all(bind=engine)
+            db = SessionLocal()  # idempotent demo users (credentials: README)
+            try:
+                seed_demo_users(db)
+            finally:
+                db.close()
             logger.info("Database tables ensured.")
             break
         except OperationalError as exc:
@@ -53,6 +60,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
 app.include_router(meta.router)
 app.include_router(projects.router)
 app.include_router(risk.router)

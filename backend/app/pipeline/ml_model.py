@@ -47,6 +47,9 @@ NUMERIC_FEATURES = [
     "has_images_int",
     "district_missing",
     "is_rajya_sabha_int",
+    # from the two allocation/duplicate rules' RAW signals (not their flags)
+    "ceiling_utilization",   # MP's committed total / official ceiling
+    "dup_max_similarity",    # best text similarity to another work of the same MP (0-100)
 ]
 CATEGORY_FEATURES = [f"dc_{c}" for c in all_categories()]
 FEATURE_COLUMNS = NUMERIC_FEATURES + CATEGORY_FEATURES
@@ -64,6 +67,8 @@ EXPLAIN_FEATURES: dict[str, tuple[int, str]] = {
     "district_amount_mean_log": (1, "project costs across this whole district run high"),
     "days_since_recommendation": (1, "it was recommended long ago with little recorded activity"),
     "mp_completion_rate_pct": (-1, "this MP completes unusually few of its works"),
+    "ceiling_utilization": (1, "this MP has committed close to or beyond their official allocation ceiling"),
+    "dup_max_similarity": (1, "it closely resembles another work recorded for the same MP"),
 }
 
 
@@ -106,8 +111,15 @@ def build_feature_matrix(
     projects: pd.DataFrame,
     vtx: pd.DataFrame,
     mp_summary: pd.DataFrame | None = None,
+    ceiling: pd.DataFrame | None = None,
+    duplicate: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Return the numeric feature matrix, indexed by project id."""
+    """Return the numeric feature matrix, indexed by project id.
+
+    `ceiling` / `duplicate`: output frames of rules.allocation_ceiling_breach /
+    rules.duplicate_work (indexed by project id). Only their continuous raw signals
+    (`ceiling_utilization`, `max_similarity`) are used, never the rule flags.
+    """
     f = add_project_features(projects).reset_index(drop=True)
 
     f["status_recommended"] = f["status"].astype(str).eq("recommended").astype(int)
@@ -162,6 +174,14 @@ def build_feature_matrix(
     dc = f["derived_category"].fillna("other")
     for c in all_categories():
         f[f"dc_{c}"] = dc.eq(c).astype(int)
+
+    util = (pd.to_numeric(ceiling["ceiling_utilization"], errors="coerce")
+            .reindex(f["id"]).to_numpy() if ceiling is not None else np.full(len(f), np.nan))
+    f["ceiling_utilization"] = util
+    f["ceiling_utilization"] = f["ceiling_utilization"].fillna(f["ceiling_utilization"].median()).fillna(0.0)
+    f["dup_max_similarity"] = (pd.to_numeric(duplicate["max_similarity"], errors="coerce")
+                               .reindex(f["id"]).fillna(0.0).to_numpy()
+                               if duplicate is not None else 0.0)
 
     X = f.reindex(columns=FEATURE_COLUMNS).astype(float).fillna(0.0)
     X.index = f["id"].to_numpy() if "id" in f.columns else f.index

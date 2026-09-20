@@ -17,12 +17,14 @@ script (see `evaluate_rules.py`).
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz, process
 
 from app.pipeline import SNAPSHOT_DATE
+from app.pipeline.names import match_mps, normalize_mp_name
 
 # --- tunable thresholds ---------------------------------------------------- #
 COST_Z_THRESHOLD = 2.5
@@ -42,6 +44,22 @@ STALLED_FUZZY_VENDOR = 90      # token_set_ratio cutoff: recommended vs expendit
 PAYMENT_INPROGRESS_SHARE_THRESHOLD = 0.20   # in-progress value / total value
 PAYMENT_MIN_TXNS = 5
 PAYMENT_MIN_UTILISATION = 30.0   # only contradictory if the MP also claims util.
+
+# allocation_ceiling_breach: tolerance absorbs rounding/timing differences between snapshots
+ALLOCATION_TOLERANCE = 0.02
+
+# duplicate_work: text AND amount AND date must all agree, on boilerplate-stripped descriptions.
+# Measured on real rows (see RUNBOOK): text+amount alone flags ~21% (mostly multi-unit purchases
+# entered in one batch: five identical water tankers, ten identical library-book lots);
+# a rare-token filter brings it to 6.6%; the date gap brings it to ~1.4%.
+DUPLICATE_TEXT_SIMILARITY = 90       # token_sort_ratio on the rare, non-numeric tokens
+DUPLICATE_AMOUNT_TOLERANCE = 0.15    # amounts within 15% of the larger one
+DUPLICATE_MIN_GAP_DAYS = 30          # same batch/date entries are multi-unit buys, not re-claims
+DUPLICATE_MIN_RARE_TOKENS = 2        # specificity floor: distinctive tokens that must remain
+DUPLICATE_COMMON_DF = 0.001          # a token in > 0.1% of all descriptions is boilerplate...
+DUPLICATE_COMMON_DF_FLOOR = 3        # ...but never treat a token seen <=3 times as boilerplate
+
+RECENT_TERM_MONTHS = 18
 
 _DAYS_PER_MONTH = 30.44
 _non_alnum = re.compile(r"[^a-z0-9 ]+")
@@ -246,7 +264,7 @@ def stalled_project(
     vendor_transactions: pd.DataFrame,
     mp_summary: pd.DataFrame | None = None,
     min_age_days: int = STALLED_MIN_AGE_DAYS,
-    use_fuzzy: bool = True,
+    use_fuzzy: bool = True, mp_allocation: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Flag recommended works that are old AND show no downstream activity AND
     belong to an MP that broadly under-delivers.
@@ -311,6 +329,21 @@ def stalled_project(
         has_vendor = mp_norm.isin(vendor_mps)
 
     flagged_cand = ~(has_completed | has_vendor)
+    # Full suppression for a new term: an old recommendation may predate the
+    # incumbent, so merely discounting the score would still misattribute the signal.
+    # Term start comes from the official PDF (year only -> assumed 1 July of that year).
+    # LS rows carry no term in the PDF, so they are never dampened (elected 2024 =
+    # >18 months before the snapshot anyway).
+    if mp_allocation is not None and not mp_allocation.empty and len(cand):
+        m = match_mps(cand[["mp_name", "state"]], mp_allocation)
+        m["_ts"] = m["alloc_index"].map(mp_allocation["term_start"]) if "term_start" in mp_allocation else np.nan
+        term_months = (SNAPSHOT_DATE.year - m["_ts"]) * 12 + (SNAPSHOT_DATE.month - 7)
+        m["_recent"] = m["_ts"].notna() & (term_months < RECENT_TERM_MONTHS)
+        rec = cand[["mp_name", "state"]].merge(
+            m[["mp_name", "state", "_recent"]], on=["mp_name", "state"], how="left"
+        )
+        recent = pd.Series(rec["_recent"].fillna(False).to_numpy(bool), index=cand.index)
+        flagged_cand = flagged_cand & ~recent
     months = (age_days / _DAYS_PER_MONTH).round()  # float, NaN for non-recommended
 
     flagged = pd.Series(False, index=df.index)
@@ -340,6 +373,207 @@ def stalled_project(
     out.index.name = "project_id"
     # only the recommended rows are in scope for this rule
     return out[is_rec.to_numpy()]
+
+
+def allocation_ceiling_breach(
+    projects: pd.DataFrame,
+    mp_allocation: pd.DataFrame,
+    tolerance: float = ALLOCATION_TOLERANCE,
+    exclude_from_total=None,
+) -> pd.DataFrame:
+    """Flag the projects that PUSH an MP's committed total past their OFFICIAL allocation ceiling.
+
+    Each MP's projects are ordered by date (completion date, else recommendation date; ties
+    by id; undated last) and a running cumulative total is kept. A project is flagged when the
+    cumulative total *including it* exceeds the ceiling by more than `tolerance` -- i.e. the
+    project that crosses the line and any later ones that add to the excess. The MP's earlier
+    portfolio, committed while still within the ceiling, is NOT flagged.
+
+    A direct comparison against an authoritative figure -- no peer groups, no z-scores.
+    MPs are linked to the official rows with `names.match_mps` (normalise both sides,
+    then same-state fuzzy for the remainder). An MP with no match, or whose official
+    ceiling is unpublished, is NOT APPLICABLE (never treated as a zero ceiling).
+
+    `exclude_from_total`: optional boolean array (positional, same length as
+    `projects`) of rows to leave out of the running total (and never flag). The synthetic-data
+    pipeline uses it so injected fixtures (test scaffolding, not real commitments) don't push
+    MPs over their ceiling.
+
+    Returns a frame indexed by project id: flagged, reason, total_amount (MP total),
+    official_ceiling, ceiling_utilization (MP total / ceiling; feeds the ML feature matrix),
+    excess_pct (MP total over ceiling), cumulative_amount (running total after this project),
+    match_method.
+    """
+    df = projects.reset_index(drop=True).copy()
+    alloc = mp_allocation.copy()
+    alloc["official_allocated_ceiling"] = pd.to_numeric(alloc["official_allocated_ceiling"], errors="coerce")
+
+    m = match_mps(df[["mp_name", "state"]], alloc)
+    df = df.merge(m[["mp_name", "state", "alloc_index", "method"]], on=["mp_name", "state"], how="left")
+
+    counted = _amount(df).fillna(0.0)
+    if exclude_from_total is not None:
+        counted = counted.where(~np.asarray(exclude_from_total, dtype=bool), 0.0)
+    # total per OFFICIAL MP (so two spellings of one MP are summed together)
+    totals = counted.groupby(df["alloc_index"]).transform("sum")
+    ceiling = df["alloc_index"].map(alloc["official_allocated_ceiling"])
+    utilization = totals / ceiling.replace(0, np.nan)
+    excess = utilization - 1
+
+    # running total in date order, per official MP
+    when = pd.to_datetime(
+        df["completion_date"].where(df["completion_date"].notna(), df.get("recommendation_date")),
+        errors="coerce",
+    ) if "completion_date" in df.columns else pd.Series(pd.NaT, index=df.index)
+    tie = df["id"] if "id" in df.columns else pd.Series(np.arange(len(df)), index=df.index)
+    order = (
+        pd.DataFrame({"a": df["alloc_index"], "d": when, "t": tie, "amt": counted})
+        .dropna(subset=["a"])
+        .sort_values(["a", "d", "t"], na_position="last", kind="mergesort")
+    )
+    cum = order.groupby("a")["amt"].cumsum().reindex(df.index)
+    threshold = ceiling * (1 + tolerance)
+    flagged = ((cum > threshold) & (counted > 0)).fillna(False)
+
+    reason = pd.Series([None] * len(df), dtype=object)
+    for i in df.index[flagged.to_numpy()]:
+        over = cum.at[i] / ceiling.at[i] - 1
+        reason.at[i] = (
+            f"Committing this work takes the MP's running total to ₹{cum.at[i]:,.0f}, "
+            f"{over * 100:.1f}% over their official allocation ceiling of ₹{ceiling.at[i]:,.0f}"
+        )
+    out = pd.DataFrame({
+        "flagged": flagged.to_numpy(), "reason": reason.to_numpy(),
+        "total_amount": totals.to_numpy(), "official_ceiling": ceiling.to_numpy(),
+        "ceiling_utilization": utilization.to_numpy(), "excess_pct": (excess * 100).to_numpy(),
+        "cumulative_amount": cum.to_numpy(),
+        "match_method": df["method"].to_numpy(),
+    })
+    out.index = df["id"].to_numpy() if "id" in df.columns else df.index
+    out.index.name = "project_id"
+    return out
+
+
+# --- duplicate work -------------------------------------------------------- #
+# Generic work-verbs / connectors / administrative words. A match must not be driven by any of
+# these -- they are stripped BEFORE comparing, so only the specific part of a description
+# (the asset, the place, the identifier) is left to be compared.
+_GENERIC_PHRASES = re.compile(
+    r"\b(?:supply,? (?:and|&) (?:installation|fixing|erection|laying)|"
+    r"supply,? installation (?:and|&) commissioning|providing (?:and|&) (?:fixing|laying|fitting)|"
+    r"repairs? (?:and|&) (?:renovation|maintenance)|construction work|constructions?|const\.?|"
+    r"installation work|installation|renovation|repair|maintenance|improvement|development|"
+    r"upgradation|strengthening|extension|erection|laying|providing|provision|purchase|"
+    r"procurement|establishment|setting up|works?|under mplads?|mplads?)\b"
+)
+_STOPWORDS = frozenset(
+    "of the a an and or at in on near from to by with for under within along around towards nearby "
+    "as per side is are be via having including incl etc new proposed various different some "
+    "village vill gram gaon panchayat gp block tehsil tahsil taluka taluk mandal district dist "
+    "ward no nos number nirman karya kary hetu ka ki ke mein me se par".split()
+)
+_LEADING_SERIAL = re.compile(r"^\s*\d+\s*[-.):]\s*")
+_PUNCT = re.compile(r"[^a-z0-9 ]+")
+
+
+def specific_text(description: object) -> str:
+    """Boilerplate-stripped description used for duplicate matching."""
+    s = _LEADING_SERIAL.sub("", str(description or "").lower())
+    s = _PUNCT.sub(" ", s)
+    s = _GENERIC_PHRASES.sub(" ", s)
+    return " ".join(t for t in s.split() if t not in _STOPWORDS)
+
+
+def _is_numeric_token(t: str) -> bool:
+    return any(c.isdigit() for c in t)
+
+
+def duplicate_work(
+    projects: pd.DataFrame,
+    similarity: int = DUPLICATE_TEXT_SIMILARITY,
+    amount_tolerance: float = DUPLICATE_AMOUNT_TOLERANCE,
+    min_gap_days: int = DUPLICATE_MIN_GAP_DAYS,
+) -> pd.DataFrame:
+    """'Same work claimed twice': within one MP + constituency, two projects whose
+    descriptions are near-identical, whose amounts are within `amount_tolerance`, AND whose
+    dates are at least `min_gap_days` apart. All three must hold.
+
+    Guards against false positives:
+      * boilerplate is removed before comparing: generic work-verbs/connectors by phrase
+        list, then any word that is common across the whole corpus ("road", "light",
+        "school"...) by document frequency. Only RARE tokens (the asset/place identifiers)
+        are compared, and >= DUPLICATE_MIN_RARE_TOKENS must remain;
+      * numeric tokens must agree exactly (series "Sl. No. 1-150" vs "151-300" are two works);
+      * token_sort_ratio, so extra words LOWER the score (token_set would not);
+      * a pair sharing the same Work ID is lifecycle continuity, not a duplicate;
+      * entries < `min_gap_days` apart are multi-unit purchases entered together.
+
+    Returns a frame indexed by project id: flagged, reason, max_similarity (best text
+    similarity to another same-MP work on rare tokens, whatever its amount/date -- the raw
+    signal for the ML feature matrix), n_matches.
+    """
+    df = projects.reset_index(drop=True).copy()
+    n_all = len(df)
+    flagged = np.zeros(n_all, bool)
+    max_sim = np.zeros(n_all)
+    n_match = np.zeros(n_all, int)
+    reason = np.full(n_all, None, dtype=object)
+
+    toks = df["work_description"].map(lambda d: specific_text(d).split())
+    df_count = Counter(t for ts in toks for t in set(ts))
+    common_cut = max(DUPLICATE_COMMON_DF * n_all, DUPLICATE_COMMON_DF_FLOOR)
+    rare = toks.map(lambda ts: [t for t in ts if df_count[t] <= common_cut and not _is_numeric_token(t)])
+    rare_txt = rare.map(" ".join)
+    nums = toks.map(lambda ts: " ".join(sorted({t for t in ts if _is_numeric_token(t)})))
+    specific_ok = (rare.map(len) >= DUPLICATE_MIN_RARE_TOKENS).to_numpy()
+
+    amount = _amount(df).to_numpy(dtype=float)
+    ext = df["external_id"] if "external_id" in df.columns else pd.Series([None] * n_all)
+    date = pd.to_datetime(
+        df["completion_date"].where(df["completion_date"].notna(), df.get("recommendation_date")),
+        errors="coerce",
+    )
+    day = (date.astype("int64").where(date.notna(), np.nan) / 86_400e9).to_numpy(dtype=float)
+
+    key = (df["mp_name"].map(normalize_mp_name) + "|" + df["constituency"].fillna("").map(_norm)).to_numpy()
+    for _, idx in pd.Series(np.arange(n_all)).groupby(key).groups.items():
+        idx = np.asarray(idx)
+        if len(idx) < 2 or specific_ok[idx].sum() < 2:
+            continue
+        texts = rare_txt.iloc[idx].tolist()
+        # 60 = floor for the ML feature; scores below it are recorded as 0
+        S = process.cdist(texts, texts, scorer=fuzz.token_sort_ratio, score_cutoff=60,
+                          dtype=np.uint8, workers=-1).astype(np.int16)
+        codes = pd.factorize(ext.iloc[idx])[0].astype(np.int64)
+        codes = np.where(codes < 0, -(np.arange(len(idx)) + 1), codes)   # null id != any other
+        nc = pd.factorize(nums.iloc[idx])[0]
+        ok = specific_ok[idx]
+        pair_ok = (ok[:, None] & ok[None, :] & (codes[:, None] != codes[None, :])
+                   & (nc[:, None] == nc[None, :]))
+        a = amount[idx]
+        amt_ok = np.abs(a[:, None] - a[None, :]) <= amount_tolerance * np.maximum(a[:, None], a[None, :])
+        d = day[idx]
+        gap_ok = np.abs(d[:, None] - d[None, :]) >= min_gap_days      # NaN date -> False
+        S = np.where(pair_ok, S, 0)
+        M = (S >= similarity) & amt_ok & gap_ok
+        max_sim[idx] = S.max(axis=1)
+        hit = M.any(axis=1)
+        flagged[idx] = hit
+        n_match[idx] = M.sum(axis=1)
+        for local in np.flatnonzero(hit):
+            j = int(np.argmax(np.where(M[local], S[local], -1)))
+            dj = date.iloc[idx[j]]
+            when = dj.strftime("%d %b %Y") if pd.notna(dj) else "another date"
+            reason[idx[local]] = (
+                f"Near-identical work also recorded for this MP on {when} "
+                f"(similarity {int(S[local, j])}%, amounts within {int(amount_tolerance * 100)}%)"
+            )
+
+    out = pd.DataFrame({"flagged": flagged, "reason": reason, "max_similarity": max_sim,
+                        "n_matches": n_match})
+    out.index = df["id"].to_numpy() if "id" in df.columns else df.index
+    out.index.name = "project_id"
+    return out
 
 
 # ======================================================================= #

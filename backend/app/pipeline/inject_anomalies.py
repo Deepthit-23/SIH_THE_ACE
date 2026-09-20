@@ -23,7 +23,8 @@ import pandas as pd
 from sqlalchemy import text
 
 from app.database import engine
-from app.pipeline import SNAPSHOT_DATE
+from app.pipeline import SNAPSHOT_DATE, rules
+from app.pipeline.names import match_mps
 
 PROJECT_COLS = [
     "external_id", "source_file", "work_description", "category", "derived_category",
@@ -214,6 +215,101 @@ def inject_payment_gap(vtx: pd.DataFrame, rng: np.random.Generator, n_units: int
     return pd.DataFrame(rows, columns=VTX_COLS)
 
 
+def _project_row(src: pd.Series, kind: str, id_pool: Iterator[str], amount: float, status: str,
+                 description: str, when) -> dict:
+    """One synthetic project row cloned from `src`'s MP/place, with its own amount/date."""
+    done = status == "completed"
+    return {
+        "external_id": next(id_pool),
+        "source_file": "completed_works" if done else "recommended_works",
+        "work_description": description, "category": src["category"],
+        "derived_category": src["derived_category"],
+        "mp_name": src["mp_name"], "constituency": src["constituency"],
+        "state": src["state"], "house": src["house"],
+        "is_rajya_sabha": bool(src["is_rajya_sabha"]),
+        "ida": src["ida"], "district": src["district"],
+        "sanctioned_amount": None if done else round(amount, 2),
+        "final_amount": round(amount, 2) if done else None,
+        "spent_amount": None, "contractor_name": None, "start_date": None,
+        "recommendation_date": None if done else when,
+        "completion_date": when if done else None,
+        "status": status, "has_images": False, "average_rating": None,
+        "is_synthetic_anomaly": True, "anomaly_type": kind,
+    }
+
+
+def inject_allocation_breach(
+    real: pd.DataFrame, alloc: pd.DataFrame, rng: np.random.Generator, n_mps: int,
+    id_pool: Iterator[str], works_per_mp: int = 8,
+) -> pd.DataFrame:
+    """Dedicated breach fixtures: pick MPs whose REAL committed total is 70-95% of their
+    official ceiling and add works that push the total 5-25% OVER it.
+
+    The added works are small, recent 'recommended' entries built from other MPs' real
+    descriptions in the same state, so no other rule (stalled, duplicate) is provoked.
+    Cost-inflation fixtures are never used for this -- they are excluded from the ceiling total.
+    """
+    amt = rules._amount(real).fillna(0.0)
+    pairs = real[["mp_name", "state"]].drop_duplicates()
+    m = match_mps(pairs, alloc)
+    m = m[m["alloc_index"].notna()]
+    key = dict(zip(zip(m["mp_name"], m["state"]), m["alloc_index"]))
+    real = real.assign(_alloc=[key.get(k) for k in zip(real["mp_name"], real["state"])], _amt=amt)
+    tot = real.groupby("_alloc")["_amt"].sum()
+    ceil = tot.index.map(alloc["official_allocated_ceiling"])
+    util = pd.Series(tot.to_numpy() / pd.to_numeric(pd.Series(ceil), errors="coerce").to_numpy(), index=tot.index)
+    cand = util[(util >= 0.70) & (util <= 0.95)].index.to_numpy()
+    picks = rng.choice(cand, size=min(n_mps, len(cand)), replace=False)
+
+    rows = []
+    for a in picks:
+        ceiling = float(alloc.at[a, "official_allocated_ceiling"])
+        target = float(rng.uniform(1.05, 1.25))
+        excess = target * ceiling - float(tot[a])
+        mine = real[real["_alloc"] == a]
+        host = mine.iloc[0]
+        pool = real[(real["state"] == host["state"]) & (real["mp_name"] != host["mp_name"])
+                    & real["work_description"].notna()]
+        descs = pool["work_description"].sample(n=works_per_mp, random_state=int(rng.integers(1e9))).tolist()
+        w = rng.dirichlet(np.ones(works_per_mp) * 4)
+        for d, share in zip(descs, w):
+            when = SNAPSHOT_DATE - timedelta(days=int(rng.integers(20, 200)))
+            rows.append(_project_row(host, "allocation_ceiling_breach", id_pool, excess * share,
+                                     "recommended", d, when))
+    return pd.DataFrame(rows, columns=PROJECT_COLS)
+
+
+def inject_duplicate_work(
+    real: pd.DataFrame, rng: np.random.Generator, n: int, id_pool: Iterator[str],
+) -> pd.DataFrame:
+    """Re-claim a real work: same MP + constituency, near-identical description (tiny wording
+    edit), amount within +/-8%, a different date 60-300 days away, a new Work ID.
+
+    Sources are real works that carry a distinctive description (>= 4 specific tokens) and are
+    not already duplicate-flagged, so the fixture tests the rule rather than template noise.
+    """
+    already = rules.duplicate_work(real)["flagged"]
+    amt = rules._amount(real)
+    spec_len = real["work_description"].map(lambda d: len(rules.specific_text(d).split()))
+    ok = (~already.to_numpy()) & (spec_len.to_numpy() >= 4) & (amt.between(50_000, 3_000_000)).to_numpy()
+    src = real[ok].sample(n=min(n, int(ok.sum())), random_state=int(rng.integers(1e9)))
+    rows = []
+    for _, r in src.iterrows():
+        a = float(pd.to_numeric(r["sanctioned_amount"], errors="coerce")
+                  if pd.notna(r["sanctioned_amount"]) else r["final_amount"])
+        new_amt = a * float(rng.uniform(0.92, 1.08))
+        done = r["status"] == "completed"
+        base = pd.Timestamp(r["completion_date"] if done else r["recommendation_date"])
+        shift = timedelta(days=int(rng.integers(60, 301)))
+        when = base + shift if base + shift <= pd.Timestamp(SNAPSHOT_DATE) else base - shift
+        d = str(r["work_description"]).strip()
+        words = d.split()
+        d = " ".join(words[:-1]) if len(words) > 6 and rng.random() < 0.5 else d.upper() if rng.random() < 0.5 else d + " ."
+        rows.append(_project_row(r, "duplicate_work", id_pool, new_amt,
+                                 "completed" if done else "recommended", d, when.date()))
+    return pd.DataFrame(rows, columns=PROJECT_COLS)
+
+
 # --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
@@ -223,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stalled", type=int, default=150)
     p.add_argument("--contractor-units", type=int, default=8)
     p.add_argument("--payment-gap-units", type=int, default=6)
+    p.add_argument("--ceiling-mps", type=int, default=12)
+    p.add_argument("--duplicates", type=int, default=120)
     args = p.parse_args(argv)
 
     rng = np.random.default_rng(args.seed)
@@ -255,6 +353,11 @@ def main(argv: list[str] | None = None) -> int:
         f"[{min(real_ids):,} .. {max(real_ids):,}], {len(real_ids):,} real IDs excluded"
     )
 
+    alloc = pd.read_sql("SELECT * FROM mp_allocation ORDER BY id", engine)
+    if alloc.empty:
+        print("ERROR: mp_allocation is empty. Run app.pipeline.allocation_ingest first.")
+        return 1
+
     mp_sum = pd.read_sql(
         "SELECT mp_name, constituency, completion_rate_pct FROM mp_summary", engine
     )
@@ -271,6 +374,9 @@ def main(argv: list[str] | None = None) -> int:
             real_proj, rng, args.stalled, id_pool, low_delivery_units)),
         ("vendor_transactions", inject_contractor_concentration(real_vtx, rng, args.contractor_units)),
         ("vendor_transactions", inject_payment_gap(real_vtx, rng, args.payment_gap_units)),
+        ("projects", inject_allocation_breach(
+            real_proj, alloc, rng, args.ceiling_mps, id_pool)),
+        ("projects", inject_duplicate_work(real_proj, rng, args.duplicates, id_pool)),
     ]
     for table, df in batches:
         df = df.astype(object).where(pd.notna(df), None)

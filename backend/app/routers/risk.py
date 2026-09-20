@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -8,7 +8,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.auth import current_user, project_scope_filter
+from app.models import User
 from app.models import CaseReview, Project, RiskFlag
+from app.pipeline import SNAPSHOT_DATE
 from app.schemas import RiskListItem, RiskListPage, severity_band
 
 router = APIRouter(prefix="/risk-scores", tags=["risk"])
@@ -29,8 +32,14 @@ def _top_reasons(explanation, n: int = 2) -> list[str]:
     return [e.get("message", "") for e in explanation[:n] if e.get("message")]
 
 
-def _risk_filters(min_score, derived_category, state, district, status, case_status, q):
+def _risk_filters(min_score, derived_category, state, district, status, case_status, q,
+                  recent_days=None):
     filters = []
+    if recent_days is not None:
+        # early-warning window: the project's own latest event date, relative to the data snapshot
+        # (risk_flags.flagged_at is the same for every row of a scoring run, so it cannot be used).
+        since = SNAPSHOT_DATE - timedelta(days=recent_days)
+        filters.append(func.coalesce(Project.completion_date, Project.recommendation_date) >= since)
     if min_score is not None:
         filters.append(RiskFlag.combined_risk_score >= min_score)
     if derived_category:
@@ -60,7 +69,7 @@ def _risk_filters(min_score, derived_category, state, district, status, case_sta
 
 @router.get("", response_model=RiskListPage)
 def list_risk_scores(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     sort_by: str = Query("risk", pattern="^(risk|amount|id)$"),
@@ -72,6 +81,7 @@ def list_risk_scores(
     status: str | None = Query(None, pattern="^(recommended|completed)$"),
     case_status: str | None = Query(None),
     q: str | None = Query(None, description="search MP name / work description / Work ID"),
+    recent_days: int | None = Query(None, ge=1, le=730, description="only works dated within N days of the data snapshot"),
 ) -> RiskListPage:
     """Ranked project risk list. Sorted by combined_risk_score desc by default.
 
@@ -79,8 +89,10 @@ def list_risk_scores(
     list is on GET /projects/{id}.
     """
     filters = _risk_filters(
-        min_score, derived_category, state, district, status, case_status, q
+        min_score, derived_category, state, district, status, case_status, q, recent_days
     )
+    scope = project_scope_filter(user)
+    if scope is not None: filters.append(scope)
 
     base = (
         select(Project, RiskFlag, CaseReview)
@@ -134,7 +146,7 @@ _CSV_COLUMNS = [
 
 @router.get("/export.csv")
 def export_csv(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
     min_score: float | None = Query(None, ge=0, le=100),
     derived_category: str | None = None,
     state: str | None = None,
@@ -148,6 +160,8 @@ def export_csv(
     filters = _risk_filters(
         min_score, derived_category, state, district, status, case_status, q
     )
+    scope = project_scope_filter(user)
+    if scope is not None: filters.append(scope)
     stmt = (
         select(Project, RiskFlag, CaseReview)
         .join(RiskFlag, RiskFlag.project_id == Project.id)

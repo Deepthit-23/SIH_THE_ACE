@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from app import audit
 from app.database import get_db
-from app.models import CaseReview, Project
+from app.auth import assert_project_scope, current_user, scope_sql
+from app.models import CaseReview, Project, User
 from app.schemas import (
     CaseHistoryItem,
     CaseListItem,
@@ -31,30 +32,47 @@ def _default(project_id: int) -> CaseReviewOut:
 
 
 @router.get("/projects/{project_id}/case", response_model=CaseReviewOut)
-def get_case(project_id: int, db: Session = Depends(get_db)) -> CaseReviewOut:
+def get_case(project_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> CaseReviewOut:
+    assert_project_scope(db.get(Project, project_id), user)
     cr = db.scalar(select(CaseReview).where(CaseReview.project_id == project_id))
     return CaseReviewOut.model_validate(cr) if cr else _default(project_id)
 
 
 @router.put("/projects/{project_id}/case", response_model=CaseReviewOut)
 def set_case(
-    project_id: int, body: CaseUpdateIn, db: Session = Depends(get_db)
+    project_id: int, body: CaseUpdateIn, db: Session = Depends(get_db), user: User = Depends(current_user)
 ) -> CaseReviewOut:
+    """Set a project's review status.
+
+    Permissions (enforced here, not just hidden in the UI):
+      - mp_self:  read-only -- an MP may not touch their own flags.
+      - state / district: may set any status within their scope.
+      - ministry: may set any status and can override a state/district decision.
+        A decision made by the ministry can only be changed by the ministry.
+    The reviewer identity is taken from the token, never from the request body.
+    """
+    if user.role == "mp_self":
+        raise HTTPException(403, "MP accounts are read-only")
     if body.status not in CaseReview.STATUSES:
         raise HTTPException(422, f"status must be one of {list(CaseReview.STATUSES)}")
     note = (body.note or "").strip() or None
     if body.status == "dismissed" and not note:
         raise HTTPException(422, "a note explaining the dismissal is required")
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "Project not found")
+    assert_project_scope(db.get(Project, project_id), user)
 
     cr = db.scalar(select(CaseReview).where(CaseReview.project_id == project_id))
+    if (
+        cr is not None and user.role != "ministry"
+        and cr.status in ("confirmed", "dismissed")
+        and (cr.reviewer or "").startswith("ministry:")
+    ):
+        raise HTTPException(403, "this decision was made by the ministry and can only be changed by the ministry")
     if cr is None:
         cr = CaseReview(project_id=project_id)
         db.add(cr)
     cr.status = body.status
     cr.note = note
-    cr.reviewer = (body.reviewer or "").strip() or None
+    cr.reviewer = f"{user.role}:{user.username}"
     db.flush()
 
     ts = datetime.now(timezone.utc)
@@ -65,7 +83,8 @@ def set_case(
 
 
 @router.get("/projects/{project_id}/case/history", response_model=list[CaseHistoryItem])
-def case_history(project_id: int, db: Session = Depends(get_db)) -> list[CaseHistoryItem]:
+def case_history(project_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[CaseHistoryItem]:
+    assert_project_scope(db.get(Project, project_id), user)
     rows = db.execute(
         text(
             """
@@ -90,7 +109,7 @@ def case_history(project_id: int, db: Session = Depends(get_db)) -> list[CaseHis
 
 @router.get("/cases", response_model=CaseListPage)
 def list_cases(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
     status: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -102,9 +121,11 @@ def list_cases(
         filters.append("cr.status = :status")
         params["status"] = status
 
-    where = " AND ".join(filters)
+    scope, sparams = scope_sql(user, "p")
+    params.update(sparams)
+    where = " AND ".join(filters) + scope
     total = db.execute(
-        text(f"SELECT count(*) FROM case_reviews cr WHERE {where}"), params
+        text(f"SELECT count(*) FROM case_reviews cr JOIN projects p ON p.id = cr.project_id WHERE {where}"), params
     ).scalar_one()
     rows = db.execute(
         text(

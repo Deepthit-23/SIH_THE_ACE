@@ -42,6 +42,22 @@ def test_cost_anomaly_ignores_cheap_projects():
 
 
 # --------------------------------------------------------------------------- #
+# Rule 1b — official allocation ceiling
+# --------------------------------------------------------------------------- #
+def test_allocation_ceiling_skips_mp_with_missing_official_ceiling():
+    """The single source row with no published ceiling is non-applicable, not ₹0."""
+    proj = _projects([{"mp_name": "CHAVAN VASANTRAO BALWANTRAO", "final_amount": 9_999_999}])
+    allocation = pd.DataFrame([{
+        "mp_name": "CHAVAN VASANTRAO BALWANTRAO", "state": "Maharashtra",
+        "official_allocated_ceiling": None,
+    }])
+    res = rules.allocation_ceiling_breach(proj, allocation)
+    assert not res.loc[1, "flagged"]
+    assert pd.isna(res.loc[1, "official_ceiling"])
+    assert res.loc[1, "reason"] is None
+
+
+# --------------------------------------------------------------------------- #
 # Rule 2 — contractor concentration
 # --------------------------------------------------------------------------- #
 _VTX_COLS = [
@@ -154,3 +170,151 @@ def test_payment_gap_not_flagged_when_share_low():
     summ = pd.DataFrame([{"mp_name": "MP A", "constituency": "CityX", "utilization_pct": 100.0}])
     res = rules.payment_gap(_vtx(rows), summ)
     assert not res.iloc[0]["flagged"]
+
+
+# --------------------------------------------------------------------------- #
+# allocation_ceiling_breach — more cases
+# --------------------------------------------------------------------------- #
+_ALLOC = pd.DataFrame([{
+    "mp_name": "ABHISHEK MANU SINGHVI", "state": "Telangana",
+    "official_allocated_ceiling": 10_000_000, "term_start": None,
+}])
+
+
+def _mp_rows(amounts, name="Dr. Abhishek Manu Singhvi (2026-32)"):
+    return _projects([{"mp_name": name, "state": "Telangana", "final_amount": a} for a in amounts])
+
+
+def _dated(amounts, name="Dr. Abhishek Manu Singhvi (2026-32)"):
+    """Projects with strictly increasing completion dates, in list order."""
+    rows = [{"mp_name": name, "state": "Telangana", "final_amount": a,
+             "completion_date": SNAPSHOT_DATE - timedelta(days=1000 - 10 * i)} for i, a in enumerate(amounts)]
+    return _projects(rows)
+
+
+def test_ceiling_flags_only_the_project_that_crosses_the_line():
+    # 4M + 4M = 8M (within), +3M -> 11M crosses the 10M ceiling. Only the third is flagged.
+    res = rules.allocation_ceiling_breach(_dated([4_000_000, 4_000_000, 3_000_000]), _ALLOC)
+    assert res["flagged"].tolist() == [False, False, True]     # name normalised: honorific + suffix
+    assert "over their official allocation ceiling" in res.iloc[2]["reason"]
+    assert res["excess_pct"].round(1).eq(10.0).all()           # MP-level figure is unchanged
+
+
+def test_ceiling_later_projects_after_the_crossing_are_also_flagged():
+    res = rules.allocation_ceiling_breach(_dated([9_000_000, 2_000_000, 1_000_000]), _ALLOC)
+    assert res["flagged"].tolist() == [False, True, True]
+
+
+def test_ceiling_order_follows_dates_not_row_order():
+    rows = _dated([3_000_000, 4_000_000, 4_000_000])           # dates ascend with row order...
+    rows.loc[rows.index[0], "completion_date"] = SNAPSHOT_DATE  # ...but the 3M project is now the latest
+    res = rules.allocation_ceiling_breach(rows, _ALLOC)
+    assert res["flagged"].tolist() == [True, False, False]
+
+
+def test_ceiling_not_flagged_within_tolerance_or_below():
+    assert not rules.allocation_ceiling_breach(_mp_rows([10_100_000]), _ALLOC)["flagged"].any()
+    assert not rules.allocation_ceiling_breach(_mp_rows([5_000_000]), _ALLOC)["flagged"].any()
+
+
+def test_ceiling_excludes_fixture_rows_from_total():
+    proj = _mp_rows([6_000_000, 5_000_000])
+    res = rules.allocation_ceiling_breach(proj, _ALLOC, exclude_from_total=[False, True])
+    assert not res["flagged"].any()                   # 6M of 10M once the fixture is left out
+    assert res["ceiling_utilization"].round(2).eq(0.6).all()
+
+
+def test_ceiling_unmatched_mp_is_not_applicable():
+    res = rules.allocation_ceiling_breach(_mp_rows([99_000_000], name="Somebody Else"), _ALLOC)
+    assert not res["flagged"].any() and res["official_ceiling"].isna().all()
+
+
+# --------------------------------------------------------------------------- #
+# duplicate_work
+# --------------------------------------------------------------------------- #
+def _dup(rows):
+    d0 = SNAPSHOT_DATE - timedelta(days=400)
+    out = []
+    for i, r in enumerate(rows):
+        out.append({"mp_name": "MP D", "constituency": "C1", "external_id": str(1000 + i),
+                    "completion_date": d0, "final_amount": 500_000, **r})
+    return _projects(out)
+
+
+DESC = "Rajiv Gandhi Balika Vidyalaya Kotwali Sirsa compound"
+
+
+def test_duplicate_flags_same_work_at_similar_amount_on_different_dates():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    res = rules.duplicate_work(_dup([
+        {"work_description": DESC},
+        {"work_description": DESC + " ", "final_amount": 540_000, "completion_date": d1},
+    ]))
+    assert res["flagged"].all()
+    assert "similarity" in res.iloc[0]["reason"]
+
+
+def test_duplicate_requires_amount_agreement():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    res = rules.duplicate_work(_dup([
+        {"work_description": DESC},
+        {"work_description": DESC, "final_amount": 900_000, "completion_date": d1},
+    ]))
+    assert not res["flagged"].any()
+
+
+def test_duplicate_same_day_batch_entries_not_flagged():
+    res = rules.duplicate_work(_dup([{"work_description": DESC}, {"work_description": DESC}]))
+    assert not res["flagged"].any()                   # multi-unit purchase, dates equal
+
+
+def test_duplicate_same_work_id_is_lifecycle_not_duplicate():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    res = rules.duplicate_work(_dup([
+        {"work_description": DESC, "external_id": "77"},
+        {"work_description": DESC, "external_id": "77", "completion_date": d1},
+    ]))
+    assert not res["flagged"].any()
+
+
+def test_duplicate_boilerplate_only_text_cannot_match():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    res = rules.duplicate_work(_dup([
+        {"work_description": "Installation of the works"},
+        {"work_description": "Installation of works", "completion_date": d1},
+    ]))
+    assert not res["flagged"].any()
+
+
+def test_duplicate_different_serial_ranges_are_distinct_works():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    res = rules.duplicate_work(_dup([
+        {"work_description": "Anganwadi kitchen sets Sl. No. 1-150 Kotwali Sirsa"},
+        {"work_description": "Anganwadi kitchen sets Sl. No. 151-300 Kotwali Sirsa", "completion_date": d1},
+    ]))
+    assert not res["flagged"].any()
+
+
+def test_duplicate_is_scoped_to_one_mp_and_constituency():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    res = rules.duplicate_work(_dup([
+        {"work_description": DESC},
+        {"work_description": DESC, "mp_name": "MP OTHER", "completion_date": d1},
+    ]))
+    assert not res["flagged"].any()
+
+
+# --------------------------------------------------------------------------- #
+# stalled — new-term dampening via the shared matcher
+# --------------------------------------------------------------------------- #
+def test_stalled_suppressed_for_mp_in_office_under_18_months():
+    old = SNAPSHOT_DATE - timedelta(days=600)
+    proj = _projects([{"status": "recommended", "recommendation_date": old,
+                       "work_description": "Unique ghost road at Nowhere",
+                       "mp_name": "Dr. New Member Rao (2026-32)", "state": "Telangana"}])
+    vtx = _vtx([{"mp_name": "Someone Else", "work_description": "road"}])
+    start = SNAPSHOT_DATE.year                          # term began this year -> < 18 months
+    alloc = pd.DataFrame([{"mp_name": "NEW MEMBER RAO", "state": "Telangana",
+                           "official_allocated_ceiling": 1, "term_start": start}])
+    assert not rules.stalled_project(proj, vtx, mp_allocation=alloc).loc[1, "flagged"]
+    assert rules.stalled_project(proj, vtx).loc[1, "flagged"]     # no allocation info -> flagged

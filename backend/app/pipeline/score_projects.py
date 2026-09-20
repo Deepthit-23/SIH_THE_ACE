@@ -33,36 +33,45 @@ def _ensure_schema() -> None:
         if "risk_flags" in insp.get_table_names():
             c.execute(text("ALTER TABLE risk_flags ADD COLUMN IF NOT EXISTS rule_score double precision"))
             c.execute(text("ALTER TABLE risk_flags ADD COLUMN IF NOT EXISTS ml_score double precision"))
+        if "mp_allocation" in insp.get_table_names():
+            c.execute(text("ALTER TABLE mp_allocation ALTER COLUMN official_allocated_ceiling DROP NOT NULL"))
     Base.metadata.create_all(bind=engine)  # audit_log + case_reviews if missing
 
 
-def load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # ORDER BY id: the IsolationForest subsamples by row position, so a stable
     # row order is required for reproducible scores across fresh DB loads.
     proj = pd.read_sql("SELECT * FROM projects ORDER BY id", engine)
     vtx = pd.read_sql("SELECT * FROM vendor_transactions ORDER BY id", engine)
     mps = pd.read_sql("SELECT * FROM mp_summary ORDER BY id", engine)
-    return proj, vtx, mps
+    alloc = pd.read_sql("SELECT * FROM mp_allocation ORDER BY id", engine)
+    return proj, vtx, mps, alloc
 
 
 def run(contamination: float = 0.04) -> pd.DataFrame:
-    proj, vtx, mps = load()
+    proj, vtx, mps, alloc = load()
     print(f"projects={len(proj):,} vendor_txns={len(vtx):,} mp_summary={len(mps):,}")
 
     # --- rule engine ---
     cost = rules.cost_anomaly(proj)
-    stalled = rules.stalled_project(proj, vtx, mps)
+    stalled = rules.stalled_project(proj, vtx, mps, mp_allocation=alloc)
+    # Injected fixtures (cost, stalled, duplicate) are test scaffolding, not real commitments: keep them
+    # out of the per-MP totals so they can't push an MP over the official ceiling.
+    fixture = (proj["is_synthetic_anomaly"].astype(bool) & (proj["anomaly_type"] != "allocation_ceiling_breach")).to_numpy()
+    ceiling = rules.allocation_ceiling_breach(proj, alloc, exclude_from_total=fixture)
+    duplicate = rules.duplicate_work(proj)
     contractor = rules.contractor_concentration(vtx)
     payment = rules.payment_gap(vtx, mps)
     print(
         f"rules: cost={int(cost['flagged'].sum())} "
         f"stalled={int(stalled['flagged'].sum())} "
         f"contractor(groups)={int(contractor['flagged'].sum())} "
-        f"payment(groups)={int(payment['flagged'].sum())}"
+        f"payment(groups)={int(payment['flagged'].sum())} "
+        f"ceiling={int(ceiling['flagged'].sum())} duplicate={int(duplicate['flagged'].sum())}"
     )
 
     # --- ML detector (independent) ---
-    X = ml_model.build_feature_matrix(proj, vtx, mps)
+    X = ml_model.build_feature_matrix(proj, vtx, mps, ceiling=ceiling, duplicate=duplicate)
     model = ml_model.train_isolation_forest(X, contamination=contamination)
     ml = ml_model.score(model, X)
     stats = ml_model.population_stats(X)
@@ -73,7 +82,7 @@ def run(contamination: float = 0.04) -> pd.DataFrame:
     print(f"ml: contamination={contamination} flagged={int(ml['ml_flag'].sum())}")
 
     # --- combine ---
-    combined = risk_scorer.combine(proj, cost, stalled, contractor, payment, ml, ml_fragments=fragments)
+    combined = risk_scorer.combine(proj, cost, stalled, contractor, payment, ml, ceiling, duplicate, ml_fragments=fragments)
     print(
         f"combined_risk_score: min={combined['combined_risk_score'].min():.1f} "
         f"median={combined['combined_risk_score'].median():.1f} "

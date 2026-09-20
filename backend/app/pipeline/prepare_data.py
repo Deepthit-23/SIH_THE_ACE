@@ -219,6 +219,20 @@ def main(argv: list[str] | None = None) -> int:
         n = _write(df, table)
         print(f"  {n:>7,} rows")
 
+    # --reset drops every table, so re-create what the app needs beyond the CSVs:
+    # official ceilings (needs projects + mp_summary loaded, for the match report) and demo users.
+    try:
+        from app.pipeline import allocation_ingest
+        print("ingesting official allocation PDFs ...")
+        allocation_ingest.main()
+    except Exception as exc:  # missing PDFs must not block the rest of the load
+        print(f"WARNING: allocation ingest skipped ({exc}). Ceiling rule will be inactive.", file=sys.stderr)
+    from app.auth import seed_demo_users
+    from app.database import SessionLocal
+    with SessionLocal() as db:
+        seed_demo_users(db)
+    print("demo users seeded")
+
     print("done.")
     return 0
 

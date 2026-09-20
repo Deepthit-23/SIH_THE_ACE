@@ -24,7 +24,8 @@ const COLUMNS = [
   { key: "amount", label: "Amount", sortable: true, align: "right" },
 ];
 
-export default function RiskListPage() {
+export default function RiskListPage({ role, scopeLabel }) {
+  const isMp = role === "mp_self";
   const navigate = useNavigate();
   const [filters, setFilters] = useState(DEFAULT);
   const [sort, setSort] = useState({ by: "risk", order: "desc" });
@@ -68,7 +69,17 @@ export default function RiskListPage() {
 
   const page = data ? Math.floor(data.offset / PAGE_SIZE) + 1 : 1;
   const pageCount = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
-  const csvHref = api.exportCsvUrl({ ...params, limit: undefined, offset: undefined, sort_by: undefined, order: undefined });
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      await api.downloadCsv({ ...params, limit: undefined, offset: undefined, sort_by: undefined, order: undefined });
+    } catch (e) {
+      window.alert(e.message);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -76,19 +87,22 @@ export default function RiskListPage() {
 
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h2 className="text-lg font-semibold">Ranked risk list</h2>
+          <h2 className="text-lg font-semibold">{isMp ? "Flagged in your portfolio" : "Ranked risk list"}</h2>
           <p className="text-sm text-slate-500">
-            Projects ordered by combined risk score (rule engine + anomaly model).
+            {isMp
+              ? `Here is what has been flagged across your recommended and completed works (${scopeLabel}). Flags are prompts for review, not findings.`
+              : "Projects ordered by combined risk score (rule engine + anomaly model)."}
           </p>
         </div>
         <div className="flex items-center gap-3">
           {data && <span className="text-xs text-slate-500">{data.total.toLocaleString()} projects</span>}
-          <a
-            href={csvHref}
-            className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          <button
+            onClick={exportCsv}
+            disabled={exporting}
+            className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
-            Export CSV
-          </a>
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
         </div>
       </div>
 

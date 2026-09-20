@@ -165,8 +165,7 @@ def test_ml_fragments_suppressed_when_rule_covers_them():
 
 def test_rule_flags_dict_shape():
     out = _run()
-    assert set(out.loc[1, "rule_flags"]) == {
-        "cost_anomaly", "contractor_concentration", "payment_gap", "stalled_project"
-    }
+    assert set(out.loc[1, "rule_flags"]) == set(risk_scorer.RULE_POINTS)
+    assert len(risk_scorer.RULE_POINTS) == 6  # the six rules in the spec
     assert out.loc[1, "rule_flags"]["stalled_project"] is False
     assert out.loc[2, "rule_flags"]["stalled_project"] is True

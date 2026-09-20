@@ -5,11 +5,6 @@ never appear in ANY response payload.
 """
 
 import pytest
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-client = TestClient(app)
 
 FORBIDDEN = {"is_synthetic_anomaly", "anomaly_type"}
 
@@ -29,40 +24,34 @@ def _assert_clean(payload):
     assert FORBIDDEN.isdisjoint(set(_keys(payload)))
 
 
-@pytest.fixture(scope="module")
-def has_data() -> bool:
-    r = client.get("/risk-scores", params={"limit": 1})
-    return r.status_code == 200 and r.json()["total"] > 0
-
-
-def test_health():
+def test_health(client, ministry):
     assert client.get("/health").json()["status"] == "ok"
 
 
-def test_audit_verify_shape():
-    body = client.get("/audit/verify").json()
+def test_audit_verify_shape(client, ministry):
+    body = client.get("/audit/verify", headers=ministry).json()
     assert {"valid", "entries_checked", "broken_at", "cached"} <= set(body)
     assert isinstance(body["valid"], bool)
 
 
-def test_audit_verify_second_call_is_cached():
-    client.get("/audit/verify")
-    assert client.get("/audit/verify").json()["cached"] is True
+def test_audit_verify_second_call_is_cached(client, ministry):
+    client.get("/audit/verify", headers=ministry)
+    assert client.get("/audit/verify", headers=ministry).json()["cached"] is True
 
 
-def test_national_summary_shape(has_data):
+def test_national_summary_shape(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    b = client.get("/meta/summary").json()
+    b = client.get("/meta/summary", headers=ministry).json()
     assert b["projects_scored"] > 0
     assert b["allocated_amount"] > 0
     _assert_clean(b)
 
 
-def test_csv_export(has_data):
+def test_csv_export(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    r = client.get("/risk-scores/export.csv", params={"min_score": 90})
+    r = client.get("/risk-scores/export.csv", params={"min_score": 90}, headers=ministry)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/csv")
     lines = r.text.strip().splitlines()
@@ -71,19 +60,19 @@ def test_csv_export(has_data):
     assert "is_synthetic_anomaly" not in r.text and "anomaly_type" not in r.text
 
 
-def test_risk_scores_search(has_data):
+def test_risk_scores_search(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    r = client.get("/risk-scores", params={"q": "street light", "limit": 5})
+    r = client.get("/risk-scores", params={"q": "street light", "limit": 5}, headers=ministry)
     assert r.status_code == 200
     for item in r.json()["items"]:
         _assert_clean(item)
 
 
-def test_risk_scores_shape_and_sorting(has_data):
+def test_risk_scores_shape_and_sorting(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    r = client.get("/risk-scores", params={"limit": 25})
+    r = client.get("/risk-scores", params={"limit": 25}, headers=ministry)
     assert r.status_code == 200
     body = r.json()
     _assert_clean(body)
@@ -94,18 +83,18 @@ def test_risk_scores_shape_and_sorting(has_data):
         assert len(item["top_reasons"]) <= 2
 
 
-def test_risk_scores_min_score_filter(has_data):
+def test_risk_scores_min_score_filter(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    r = client.get("/risk-scores", params={"min_score": 90, "limit": 50})
+    r = client.get("/risk-scores", params={"min_score": 90, "limit": 50}, headers=ministry)
     assert all(i["combined_risk_score"] >= 90 for i in r.json()["items"])
 
 
-def test_project_detail_has_full_explanation(has_data):
+def test_project_detail_has_full_explanation(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    top_id = client.get("/risk-scores", params={"limit": 1}).json()["items"][0]["id"]
-    r = client.get(f"/projects/{top_id}")
+    top_id = client.get("/risk-scores", params={"limit": 1}, headers=ministry).json()["items"][0]["id"]
+    r = client.get(f"/projects/{top_id}", headers=ministry)
     assert r.status_code == 200
     body = r.json()
     _assert_clean(body)
@@ -116,37 +105,37 @@ def test_project_detail_has_full_explanation(has_data):
         assert isinstance(e["message"], str) and e["message"]
 
 
-def test_project_404():
-    assert client.get("/projects/999999999").status_code == 404
+def test_project_404(client, ministry):
+    assert client.get("/projects/999999999", headers=ministry).status_code == 404
 
 
-def test_pattern_rankings_clean(has_data):
+def test_pattern_rankings_clean(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
     for path in ("/patterns/districts", "/patterns/contractors"):
-        r = client.get(path, params={"limit": 5})
+        r = client.get(path, params={"limit": 5}, headers=ministry)
         assert r.status_code == 200
         _assert_clean(r.json())
         assert r.json()["items"]
 
 
-def test_district_and_contractor_pattern_clean(has_data):
+def test_district_and_contractor_pattern_clean(client, ministry, has_data):
     if not has_data:
         pytest.skip("no data loaded")
-    district = client.get("/patterns/districts", params={"limit": 1}).json()["items"][0]["key"]
+    district = client.get("/patterns/districts", params={"limit": 1}, headers=ministry).json()["items"][0]["key"]
     if district != "(unknown)":
-        r = client.get(f"/districts/{district}/pattern")
+        r = client.get(f"/districts/{district}/pattern", headers=ministry)
         assert r.status_code == 200
         _assert_clean(r.json())
         assert r.json()["categories"]
 
-    vendor = client.get("/patterns/contractors", params={"limit": 1}).json()["items"][0]["key"]
-    r = client.get(f"/contractors/{vendor}/pattern")
+    vendor = client.get("/patterns/contractors", params={"limit": 1}, headers=ministry).json()["items"][0]["key"]
+    r = client.get(f"/contractors/{vendor}/pattern", headers=ministry)
     assert r.status_code == 200
     _assert_clean(r.json())
     assert r.json()["units"]
 
 
-def test_pattern_404s():
-    assert client.get("/districts/NOWHERE_XYZ_123/pattern").status_code == 404
-    assert client.get("/contractors/NOSUCHVENDOR_XYZ_123/pattern").status_code == 404
+def test_pattern_404s(client, ministry):
+    assert client.get("/districts/NOWHERE_XYZ_123/pattern", headers=ministry).status_code == 404
+    assert client.get("/contractors/NOSUCHVENDOR_XYZ_123/pattern", headers=ministry).status_code == 404

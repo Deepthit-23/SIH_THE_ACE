@@ -4,6 +4,7 @@ import { CASE_ORDER, CASE_STATUS, fmtDateTime, text } from "../lib/format";
 
 /** Auditor workflow controls on the project detail view. */
 export default function CasePanel({ projectId, initialStatus, initialNote, updatedAt }) {
+  const role = localStorage.getItem("mplad_role");
   const [status, setStatus] = useState(initialStatus || "pending");
   const [note, setNote] = useState(initialNote || "");
   const [savedAt, setSavedAt] = useState(updatedAt || null);
@@ -39,6 +40,7 @@ export default function CasePanel({ projectId, initialStatus, initialNote, updat
     }
   }
 
+  if (role === "mp_self") return <div className="rounded border border-slate-200 bg-white p-5 text-sm text-slate-500">Case status: {CASE_STATUS[status].label}. MP accounts are read-only.</div>;
   return (
     <div className="rounded border border-slate-200 bg-white p-5">
       <div className="flex items-center justify-between">

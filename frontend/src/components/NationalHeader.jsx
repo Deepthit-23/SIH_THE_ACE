@@ -20,17 +20,32 @@ export default function NationalHeader() {
   }
   const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
   const n = (v) => Number(v || 0).toLocaleString("en-IN");
+  const flagged = (
+    <Tile
+      label="Flagged for review"
+      value={n(data.flagged_high + data.flagged_medium)}
+      sub={`${n(data.flagged_high)} high · of ${n(data.projects_scored)} scored`}
+    />
+  );
+  if (data.financials_available === false) {
+    // District users: the source publishes MPLADS financials per MP/state, not per district.
+    return (
+      <div className="flex flex-wrap items-stretch rounded border border-slate-200 bg-white">
+        {flagged}
+        <div className="min-w-[14rem] flex-[3] px-4 py-2 text-xs text-slate-500">
+          Allocation and spend figures are published per MP and state, not per district, so they are
+          not shown for {data.scope_label}.
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-stretch rounded border border-slate-200 bg-white">
       <Tile label="Allocated (MPLADS)" value={formatINR(data.allocated_amount)} sub={`${data.mps} MPs`} />
       <Tile label="Recommended" value={formatINR(data.recommended_amount)} sub={`${n(data.recommended_works)} works`} />
       <Tile label="Spent" value={formatINR(data.total_expenditure)} sub={`${pct(data.spend_pct_of_allocation)} of allocation`} />
       <Tile label="Completion rate" value={pct(data.completion_rate_pct)} sub={`${n(data.completed_works)} completed`} />
-      <Tile
-        label="Flagged for review"
-        value={n(data.flagged_high + data.flagged_medium)}
-        sub={`${n(data.flagged_high)} high · of ${n(data.projects_scored)} scored`}
-      />
+      {flagged}
     </div>
   );
 }

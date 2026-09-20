@@ -30,10 +30,14 @@ def _pct(x: float) -> str:
     return f"{x * 100:.1f}%" if x == x else "n/a"
 
 
+PROJECT_KINDS = ["cost_inflation", "stalled_project", "allocation_ceiling_breach", "duplicate_work"]
+
+
 def build_report() -> str:
     proj = pd.read_sql("SELECT * FROM projects ORDER BY id", engine)
     vtx = pd.read_sql("SELECT * FROM vendor_transactions ORDER BY id", engine)
     mps = pd.read_sql("SELECT * FROM mp_summary ORDER BY id", engine)
+    alloc = pd.read_sql("SELECT * FROM mp_allocation ORDER BY id", engine)
     out = io.StringIO()
 
     def w(s: str = "") -> None:
@@ -48,12 +52,16 @@ def build_report() -> str:
 
     # rule outputs (once)
     cost = rules.cost_anomaly(proj)
-    stalled = rules.stalled_project(proj, vtx, mps)
+    stalled = rules.stalled_project(proj, vtx, mps, mp_allocation=alloc)
+    # fixtures other than the breach cases are scaffolding, not commitments (see score_projects)
+    fixture = (truth["is_synthetic_anomaly"] & (truth["anomaly_type"] != "allocation_ceiling_breach")).to_numpy()
+    ceiling = rules.allocation_ceiling_breach(proj, alloc, exclude_from_total=fixture)
+    dup = rules.duplicate_work(proj)
     contractor = rules.contractor_concentration(vtx)
     payment = rules.payment_gap(vtx, mps)
 
     # feature matrix (once); models per contamination
-    X = ml_model.build_feature_matrix(proj, vtx, mps)
+    X = ml_model.build_feature_matrix(proj, vtx, mps, ceiling=ceiling, duplicate=dup)
     real_proj_mask = ~truth["is_synthetic_anomaly"].reindex(X.index).fillna(False).to_numpy()
 
     w("# ML + combined evaluation\n")
@@ -86,11 +94,13 @@ def build_report() -> str:
     ).reindex(ml.index)
 
     combined = risk_scorer.combine(
-        proj, cost, stalled, contractor, payment, ml, ml_fragments=fragments
+        proj, cost, stalled, contractor, payment, ml, ceiling, dup, ml_fragments=fragments
     )
     pid = proj["id"]
     cost_flag = cost["flagged"].astype(bool).reindex(pid, fill_value=False)
     stalled_flag = stalled["flagged"].astype(bool).reindex(pid, fill_value=False)
+    ceiling_flag = ceiling["flagged"].astype(bool).reindex(pid, fill_value=False)
+    dup_flag = dup["flagged"].astype(bool).reindex(pid, fill_value=False)
     ml_flag = (ml["ml_flag"] == True).reindex(pid, fill_value=False)  # noqa: E712
     any_rule = (combined["rule_score"] > 0).reindex(pid).fillna(False)
     combo_score = combined["combined_risk_score"].reindex(pid)
@@ -99,13 +109,17 @@ def build_report() -> str:
     t["status"] = proj.set_index("id")["status"].reindex(pid).to_numpy()
     t["cost_flag"] = cost_flag.to_numpy()
     t["stalled_flag"] = stalled_flag.to_numpy()
+    t["ceiling_flag"] = ceiling_flag.to_numpy()
+    t["dup_flag"] = dup_flag.to_numpy()
     t["ml_flag"] = ml_flag.to_numpy()
     t["any_rule"] = any_rule.to_numpy()
     t["combo_score"] = combo_score.to_numpy()
     # the rule that is actually responsible for this anomaly_type
     t["own_rule"] = np.where(
         t["anomaly_type"] == "cost_inflation", t["cost_flag"],
-        np.where(t["anomaly_type"] == "stalled_project", t["stalled_flag"], False),
+        np.where(t["anomaly_type"] == "stalled_project", t["stalled_flag"],
+        np.where(t["anomaly_type"] == "allocation_ceiling_breach", t["ceiling_flag"],
+        np.where(t["anomaly_type"] == "duplicate_work", t["dup_flag"], False))),
     )
     t["union"] = t["own_rule"].astype(bool) | t["ml_flag"]
 
@@ -155,7 +169,8 @@ def build_report() -> str:
       "stalled rule for stalled_project); matches the Phase 3 numbers._\n")
     w("| anomaly_type | grain | population | rule | ML | combined |")
     w("|---|---|--:|--:|--:|--:|")
-    for kind, flagcol in [("cost_inflation", "cost_flag"), ("stalled_project", "stalled_flag")]:
+    for kind, flagcol in [("cost_inflation", "cost_flag"), ("stalled_project", "stalled_flag"),
+                          ("allocation_ceiling_breach", "ceiling_flag"), ("duplicate_work", "dup_flag")]:
         sub = t[t["anomaly_type"] == kind]
         n = len(sub)
         w(f"| {kind} | project | {n} | {_pct(sub[flagcol].mean())} | "
@@ -165,7 +180,7 @@ def build_report() -> str:
     w(f"| payment_gap | MP-const unit | {pay_tot} | "
       f"{_pct(pay_rule_hit / pay_tot)} | {_pct(pay_ml_hit / pay_tot)} | {_pct(pay_union_hit / pay_tot)} |")
 
-    proj_syn = t[t["anomaly_type"].isin(["cost_inflation", "stalled_project"])]
+    proj_syn = t[t["anomaly_type"].isin(PROJECT_KINDS)]
     w(f"\n**Project-grain synthetic recall: rules {_pct(proj_syn['own_rule'].astype(bool).mean())} | "
       f"ML {_pct(proj_syn['ml_flag'].mean())} | combined {_pct(proj_syn['union'].mean())}**\n")
 
@@ -177,6 +192,8 @@ def build_report() -> str:
     w("|---|--:|--:|--:|")
     w(f"| cost rule | {len(real):,} projects | {int(real['cost_flag'].sum()):,} | {_pct(real['cost_flag'].mean())} |")
     w(f"| stalled rule | {len(real_rec):,} recommended | {int(real_rec['stalled_flag'].sum()):,} | {_pct(real_rec['stalled_flag'].mean())} |")
+    w(f"| ceiling rule (incl. real rows of the injected-breach host MPs; true FP in rule_eval.md) | {len(real):,} projects | {int(real['ceiling_flag'].sum()):,} | {_pct(real['ceiling_flag'].mean())} |")
+    w(f"| duplicate rule | {len(real):,} projects | {int(real['dup_flag'].sum()):,} | {_pct(real['dup_flag'].mean())} |")
     w(f"| ML (isolation forest) | {len(real):,} projects | {int(real['ml_flag'].sum()):,} | {_pct(real['ml_flag'].mean())} |")
     for thr in (50, 60, 70):
         w(f"| combined score >= {thr} | {len(real):,} projects | "
@@ -188,7 +205,7 @@ def build_report() -> str:
     w("| anomaly_type | rules missed | of those, ML caught | net new from ML |")
     w("|---|--:|--:|--:|")
     total_new = 0
-    for kind in ["cost_inflation", "stalled_project"]:
+    for kind in PROJECT_KINDS:
         sub = t[t["anomaly_type"] == kind]
         missed = ~sub["own_rule"].astype(bool)
         ml_saved = missed & sub["ml_flag"]

@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.auth import current_user, scope_sql
 from app.database import get_db
+from app.models import User
 from app.pipeline.rules import (
     CONTRACTOR_MIN_UNIT_TXNS,
     CONTRACTOR_MIN_VENDOR_TXNS,
@@ -26,30 +28,47 @@ from app.schemas import (
 router = APIRouter(tags=["patterns"])
 
 
+def _unit_scope(user: User) -> tuple[str, dict]:
+    """Restrict vendor_transactions rows to the (MP, constituency) units that touch
+    the caller's scope. Whole units are kept so concentration shares stay correct
+    (a district user still sees an MP's true share, not a district-truncated one)."""
+    cond, params = scope_sql(user, "s")
+    if not cond:
+        return "", {}
+    return (
+        " AND EXISTS (SELECT 1 FROM vendor_transactions s WHERE s.mp_name = vt.mp_name "
+        "AND s.constituency IS NOT DISTINCT FROM vt.constituency" + cond + ")",
+        params,
+    )
+
+
+
 # --------------------------------------------------------------------------- #
 # Cross-entity rankings (for the pattern-view charts)
 # --------------------------------------------------------------------------- #
 @router.get("/patterns/districts", response_model=PatternRankList)
 def rank_districts(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
     limit: int = Query(20, ge=1, le=100),
     threshold: float = Query(70, ge=0, le=100),
 ) -> PatternRankList:
+    scope, sparams = scope_sql(user, "p")
     rows = db.execute(
         text(
-            """
+            f"""
             SELECT COALESCE(NULLIF(p.district, ''), '(unknown)') AS key,
                    count(*) AS project_count,
                    avg(rf.combined_risk_score) AS avg_risk,
                    count(*) FILTER (WHERE rf.combined_risk_score >= :thr) AS high_risk
             FROM projects p
             JOIN risk_flags rf ON rf.project_id = p.id
+            WHERE 1=1{scope}
             GROUP BY 1
             ORDER BY high_risk DESC, avg_risk DESC
             LIMIT :lim
             """
         ),
-        {"thr": threshold, "lim": limit},
+        {"thr": threshold, "lim": limit, **sparams},
     ).all()
     return PatternRankList(
         dimension="district",
@@ -67,16 +86,19 @@ def rank_districts(
 
 @router.get("/patterns/contractors", response_model=PatternRankList)
 def rank_contractors(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
     limit: int = Query(20, ge=1, le=100),
 ) -> PatternRankList:
+    uscope, sparams = _unit_scope(user)
     rows = db.execute(
         text(
-            """
+            f"""
             WITH per AS (
-                SELECT mp_name, constituency, COALESCE(NULLIF(vendor, ''), 'UNKNOWN') AS vendor,
-                       count(*) AS vc, COALESCE(sum(amount), 0) AS vv
-                FROM vendor_transactions
+                SELECT vt.mp_name, vt.constituency,
+                       COALESCE(NULLIF(vt.vendor, ''), 'UNKNOWN') AS vendor,
+                       count(*) AS vc, COALESCE(sum(vt.amount), 0) AS vv
+                FROM vendor_transactions vt
+                WHERE 1=1{uscope}
                 GROUP BY 1, 2, 3
             ),
             unit AS (
@@ -111,6 +133,7 @@ def rank_contractors(
             "min_unit": CONTRACTOR_MIN_UNIT_TXNS,
             "min_vendor": CONTRACTOR_MIN_VENDOR_TXNS,
             "lim": limit,
+            **sparams,
         },
     ).all()
     return PatternRankList(
@@ -133,39 +156,40 @@ def rank_contractors(
 @router.get("/districts/{district}/pattern", response_model=DistrictPattern)
 def district_pattern(
     district: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), user: User = Depends(current_user),
     threshold: float = Query(70, ge=0, le=100),
 ) -> DistrictPattern:
+    scope, sparams = scope_sql(user, "p")
     summary = db.execute(
         text(
-            """
+            f"""
             SELECT count(*) AS n,
                    avg(rf.combined_risk_score) AS avg_risk,
                    count(*) FILTER (WHERE rf.combined_risk_score >= :thr) AS high_risk
             FROM projects p
             JOIN risk_flags rf ON rf.project_id = p.id
-            WHERE upper(p.district) = upper(:d)
+            WHERE upper(p.district) = upper(:d){scope}
             """
         ),
-        {"d": district, "thr": threshold},
+        {"d": district, "thr": threshold, **sparams},
     ).one()
     if not summary.n:
         raise HTTPException(status_code=404, detail=f"No projects for district {district!r}")
 
     cats = db.execute(
         text(
-            """
+            f"""
             SELECT COALESCE(NULLIF(p.derived_category, ''), 'other') AS cat,
                    count(*) AS n,
                    avg(rf.combined_risk_score) AS avg_risk
             FROM projects p
             JOIN risk_flags rf ON rf.project_id = p.id
-            WHERE upper(p.district) = upper(:d)
+            WHERE upper(p.district) = upper(:d){scope}
             GROUP BY 1
             ORDER BY n DESC
             """
         ),
-        {"d": district},
+        {"d": district, **sparams},
     ).all()
 
     return DistrictPattern(
@@ -186,14 +210,17 @@ def district_pattern(
 
 
 @router.get("/contractors/{vendor}/pattern", response_model=ContractorPattern)
-def contractor_pattern(vendor: str, db: Session = Depends(get_db)) -> ContractorPattern:
+def contractor_pattern(
+    vendor: str, db: Session = Depends(get_db), user: User = Depends(current_user)
+) -> ContractorPattern:
+    uscope, sparams = _unit_scope(user)
     rows = db.execute(
         text(
-            """
+            f"""
             WITH units AS (
-                SELECT DISTINCT mp_name, constituency
-                FROM vendor_transactions
-                WHERE lower(COALESCE(vendor, '')) = lower(:v)
+                SELECT DISTINCT vt.mp_name, vt.constituency
+                FROM vendor_transactions vt
+                WHERE lower(COALESCE(vt.vendor, '')) = lower(:v){uscope}
             )
             SELECT vt.mp_name, vt.constituency,
                    count(*) FILTER (WHERE lower(COALESCE(vt.vendor, '')) = lower(:v)) AS vc,
@@ -206,7 +233,7 @@ def contractor_pattern(vendor: str, db: Session = Depends(get_db)) -> Contractor
             GROUP BY vt.mp_name, vt.constituency
             """
         ),
-        {"v": vendor},
+        {"v": vendor, **sparams},
     ).all()
     if not rows:
         raise HTTPException(status_code=404, detail=f"No transactions for vendor {vendor!r}")

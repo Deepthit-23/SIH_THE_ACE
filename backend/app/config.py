@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # Frontend origins allowed to call the API. Set CORS_ORIGINS to a
     # comma-separated list in production (e.g. "https://foo.vercel.app").
     cors_origins: list[str] = _DEFAULT_CORS
+    jwt_secret: str = "change-me-before-any-non-demo-use"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 480
 
     @field_validator("cors_origins", mode="before")
     @classmethod

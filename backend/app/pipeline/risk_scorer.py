@@ -42,6 +42,16 @@ RULE_POINTS: dict[str, int] = {
     "contractor_concentration": 30,
     "payment_gap": 25,
     "stalled_project": 15,
+    # Measured, not guessed: points fall log-linearly with the flag rate on real rows,
+    # anchored on cost_anomaly (2.2% -> 40) and stalled_project (8.5% -> 15), capped at 45.
+    # allocation_ceiling_breach flags 0.13% of real rows (formula 92 -> cap 45).
+    # duplicate_work: formula gives ~49-50 (flag rate 1.3%), but flag rate is only a proxy for
+    # false-positive rate and manual review of flagged samples found many plausible legitimate
+    # repeat purchases even after the text/amount/boilerplate/date-gap filters. MANUAL OVERRIDE
+    # to 35: below cost_anomaly (40, longer track record), above payment_gap (25) / stalled (15).
+    # Provisional values were 45 / 20.
+    "allocation_ceiling_breach": 45,
+    "duplicate_work": 35,
 }
 ML_WEIGHT = 0.8
 WEAK_SIGNAL_FACTOR = 0.25
@@ -74,6 +84,8 @@ RULE_COVERS: dict[str, set[str]] = {
     "contractor_concentration": {"mp_max_vendor_value_share"},
     "payment_gap": {"mp_in_progress_share"},
     "stalled_project": {"days_since_recommendation", "mp_completion_rate_pct"},
+    "allocation_ceiling_breach": {"ceiling_utilization"},
+    "duplicate_work": {"dup_max_similarity"},
 }
 _ML_TOP_N = 3
 
@@ -91,6 +103,8 @@ _RULE_LABEL = {
     "contractor_concentration": "Contractor concentration",
     "payment_gap": "Payment gap",
     "stalled_project": "Stalled / ghost project",
+    "allocation_ceiling_breach": "Allocation ceiling breach",
+    "duplicate_work": "Duplicate work",
 }
 
 
@@ -107,6 +121,8 @@ def combine(
     contractor_df: pd.DataFrame,
     payment_df: pd.DataFrame,
     ml_df: pd.DataFrame,
+    allocation_df: pd.DataFrame | None = None,
+    duplicate_df: pd.DataFrame | None = None,
     ml_fragments: dict | None = None,
 ) -> pd.DataFrame:
     """Produce per-project scores + explanations.
@@ -138,6 +154,10 @@ def combine(
         stalled_df["reason"].reindex(idx) if stalled_df is not None
         else pd.Series(index=idx, dtype=object)
     )
+    allocation_flag = _reindex_flag(allocation_df, idx)
+    allocation_reason = allocation_df["reason"].reindex(idx) if allocation_df is not None else pd.Series(index=idx, dtype=object)
+    duplicate_flag = _reindex_flag(duplicate_df, idx)
+    duplicate_reason = duplicate_df["reason"].reindex(idx) if duplicate_df is not None else pd.Series(index=idx, dtype=object)
 
     # contractor: flagged at (mp, vendor, unit) -> reduce to MP + best reason
     cflag = contractor_df[contractor_df["flagged"]].copy() if contractor_df is not None else pd.DataFrame()
@@ -169,6 +189,8 @@ def combine(
             "contractor_concentration": contractor_flag.to_numpy(bool),
             "payment_gap": payment_flag.to_numpy(bool),
             "stalled_project": stalled_flag.to_numpy(bool),
+            "allocation_ceiling_breach": allocation_flag.to_numpy(bool),
+            "duplicate_work": duplicate_flag.to_numpy(bool),
         },
         index=idx,
     )
@@ -216,6 +238,8 @@ def combine(
         "contractor_concentration": contractor_reason,
         "payment_gap": payment_reason,
         "stalled_project": stalled_reason,
+        "allocation_ceiling_breach": allocation_reason,
+        "duplicate_work": duplicate_reason,
     }
     include_ml_np = include_ml.to_numpy()
     flags_np = {c: flags[c].to_numpy() for c in RULE_POINTS}
