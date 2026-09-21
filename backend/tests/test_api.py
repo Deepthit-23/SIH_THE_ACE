@@ -100,7 +100,9 @@ def test_project_detail_has_full_explanation(client, ministry, has_data):
     _assert_clean(body)
     assert isinstance(body["explanation"], list) and body["explanation"]
     for e in body["explanation"]:
-        assert set(e) == {"source", "code", "label", "weight", "message"}
+        assert set(e) == {"source", "code", "label", "weight", "message", "counterpart_id", "similarity"}
+        if e["code"] != "duplicate_work":                      # only duplicate findings link a counterpart
+            assert e["counterpart_id"] is None and e["similarity"] is None
         assert e["source"] in {"rule", "ml"}
         assert isinstance(e["message"], str) and e["message"]
 

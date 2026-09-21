@@ -40,16 +40,16 @@ export default function CasePanel({ projectId, initialStatus, initialNote, updat
     }
   }
 
-  if (role === "mp_self") return <div className="rounded border border-slate-200 bg-white p-5 text-sm text-slate-500">Case status: {CASE_STATUS[status].label}. MP accounts are read-only.</div>;
+  if (role === "mp_self") return <div className="rounded border border-hairline bg-surface p-5 text-sm text-ink-soft">Case status: {CASE_STATUS[status].label}. MP accounts are read-only.</div>;
   return (
-    <div className="rounded border border-slate-200 bg-white p-5">
+    <div className="rounded border border-hairline bg-surface p-5">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-800">Case status</h3>
+        <h3 className="text-sm font-semibold text-ink">Case status</h3>
         <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${CASE_STATUS[status].chip}`}>
           {CASE_STATUS[status].label}
         </span>
       </div>
-      <p className="mb-3 mt-1 text-xs text-slate-500">
+      <p className="mb-3 mt-1 text-xs text-ink-soft">
         {savedAt ? `Last updated ${fmtDateTime(savedAt)}` : "Not yet reviewed"}
       </p>
 
@@ -61,8 +61,8 @@ export default function CasePanel({ projectId, initialStatus, initialNote, updat
             className={
               "rounded border px-3 py-1.5 text-xs font-medium transition " +
               (target === s
-                ? "border-slate-800 bg-slate-800 text-white"
-                : "border-slate-300 text-slate-600 hover:bg-slate-50")
+                ? "border-ink-faint bg-ink text-surface"
+                : "border-hairline text-ink-soft hover:bg-canvas")
             }
           >
             {CASE_STATUS[s].label}
@@ -70,8 +70,8 @@ export default function CasePanel({ projectId, initialStatus, initialNote, updat
         ))}
       </div>
 
-      <label className="mt-3 block text-xs text-slate-500">
-        Note {needNote && <span className="text-red-600">(required to dismiss)</span>}
+      <label className="mt-3 block text-xs text-ink-soft">
+        Note {needNote && <span className="text-high">(required to dismiss)</span>}
         <textarea
           rows={2}
           value={note}
@@ -81,24 +81,24 @@ export default function CasePanel({ projectId, initialStatus, initialNote, updat
               ? "e.g. false positive — legitimate cost variance, verified against tender docs"
               : "optional context for this decision"
           }
-          className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-400 focus:outline-none"
+          className="mt-1 w-full rounded border border-hairline px-2 py-1.5 text-sm focus:border-ink-faint focus:outline-none"
         />
       </label>
 
-      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+      {error && <p className="mt-2 text-xs text-high">{error}</p>}
 
       <div className="mt-3 flex items-center gap-2">
         <button
           disabled={busy || !dirty || (needNote && !note.trim())}
           onClick={save}
-          className="rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+          className="rounded bg-ink px-3 py-1.5 text-xs font-medium text-surface disabled:opacity-40"
         >
           {busy ? "Saving…" : "Save decision"}
         </button>
         {dirty && !busy && (
           <button
             onClick={() => { setPending(null); setNote(initialNote || ""); }}
-            className="text-xs text-slate-400 hover:text-slate-600"
+            className="text-xs text-ink-faint hover:text-ink-soft"
           >
             Cancel
           </button>
@@ -106,18 +106,18 @@ export default function CasePanel({ projectId, initialStatus, initialNote, updat
       </div>
 
       {history.length > 0 && (
-        <div className="mt-4 border-t border-slate-100 pt-3">
-          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-            Review history · in the audit chain
+        <div className="mt-4 border-t border-hairline pt-3">
+          <p className="mb-1.5 text-[11px] font-medium text-ink-faint">
+            Review history, recorded in the audit chain
           </p>
-          <ul className="space-y-1 text-xs text-slate-600">
+          <ul className="space-y-1 text-xs text-ink-soft">
             {history.map((h, i) => (
               <li key={i} className="flex justify-between gap-2">
                 <span>
                   {CASE_STATUS[h.status]?.label || h.status}
-                  {h.reviewer ? ` · ${h.reviewer}` : ""}
+                  {h.reviewer ? ` by ${h.reviewer}` : ""}
                 </span>
-                <span className="tabular-nums text-slate-400" title={h.payload_hash}>
+                <span className="tabular-nums text-ink-faint" title={h.payload_hash}>
                   {fmtDateTime(h.timestamp)}
                 </span>
               </li>

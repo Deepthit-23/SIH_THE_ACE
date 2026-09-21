@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.auth import current_user, scope_sql
+from app.auth import current_user, scope_label, scope_sql
 from app.database import get_db
 from app.models import User
 from app.pipeline.rules import (
@@ -57,13 +57,14 @@ def rank_districts(
         text(
             f"""
             SELECT COALESCE(NULLIF(p.district, ''), '(unknown)') AS key,
+                   p.work_state AS st,
                    count(*) AS project_count,
                    avg(rf.combined_risk_score) AS avg_risk,
                    count(*) FILTER (WHERE rf.combined_risk_score >= :thr) AS high_risk
             FROM projects p
             JOIN risk_flags rf ON rf.project_id = p.id
-            WHERE 1=1{scope}
-            GROUP BY 1
+            WHERE p.work_state IS NOT NULL{scope}
+            GROUP BY 1, 2
             ORDER BY high_risk DESC, avg_risk DESC
             LIMIT :lim
             """
@@ -75,6 +76,7 @@ def rank_districts(
         items=[
             PatternRankRow(
                 key=r.key,
+                state=r.st,
                 project_count=r.project_count,
                 avg_risk_score=round(float(r.avg_risk or 0), 1),
                 high_risk_count=r.high_risk,
@@ -82,6 +84,68 @@ def rank_districts(
             for r in rows
         ],
     )
+
+
+@router.get("/patterns/states")
+def rank_states(
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+    flag_threshold: float = Query(50, ge=0, le=100),
+    high_threshold: float = Query(70, ge=0, le=100),
+) -> dict:
+    """Per-state aggregates for the choropleth map (scoped like every other pattern endpoint).
+
+    `flagged` = combined score >= flag_threshold (medium + high, the same definition as the header
+    tile); `flagged_pct` is the share of the state's projects. A State user gets only their own
+    state; a District / MP user gets the single state their scope sits in, counting ONLY the
+    projects inside their scope (see `scope_label`). States are where the WORK is located (work_state),
+    so a district user's figures land on their district's state, never on an MP's home state.
+    """
+    scope, sparams = scope_sql(user, "p")
+    rows = db.execute(
+        text(
+            f"""
+            SELECT p.work_state AS state,
+                   count(*) AS project_count,
+                   avg(rf.combined_risk_score) AS avg_risk,
+                   count(*) FILTER (WHERE rf.combined_risk_score >= :flag) AS flagged,
+                   count(*) FILTER (WHERE rf.combined_risk_score >= :high) AS high
+            FROM projects p
+            JOIN risk_flags rf ON rf.project_id = p.id
+            WHERE p.work_state IS NOT NULL{scope}
+            GROUP BY p.work_state
+            ORDER BY 1
+            """
+        ),
+        {"flag": flag_threshold, "high": high_threshold, **sparams},
+    ).all()
+    # Works whose location could not be resolved (ambiguous district name) have work_state NULL: they are on
+    # no state's map and in no State/District scope, but they DO count nationally, so report them here.
+    # A scoped user always gets 0 (their scope cannot match a NULL); the Ministry sees the real number.
+    unlocated = db.execute(
+        text(f"SELECT count(*) FROM projects p JOIN risk_flags rf ON rf.project_id = p.id "
+             f"WHERE p.work_state IS NULL{scope}"),
+        sparams,
+    ).scalar() or 0
+    return {
+        "scope_label": scope_label(user),
+        # national | state | district | mp -- the UI draws a map only where a whole-state colour is accurate
+        "scope_kind": {"ministry": "national", "state_nodal": "state",
+                       "district_authority": "district", "mp_self": "mp"}[user.role],
+        "unlocated_count": int(unlocated),
+        "flag_threshold": flag_threshold,
+        "high_threshold": high_threshold,
+        "items": [
+            {
+                "state": r.state,
+                "project_count": r.project_count,
+                "avg_risk_score": round(float(r.avg_risk or 0), 1),
+                "flagged_count": r.flagged,
+                "flagged_pct": round(100.0 * r.flagged / r.project_count, 1) if r.project_count else 0.0,
+                "high_risk_count": r.high,
+            }
+            for r in rows
+        ],
+    }
 
 
 @router.get("/patterns/contractors", response_model=PatternRankList)
@@ -153,13 +217,82 @@ def rank_contractors(
 # --------------------------------------------------------------------------- #
 # Single-entity drill-in
 # --------------------------------------------------------------------------- #
+@router.get("/patterns/network")
+def contractor_network(
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+    limit: int = Query(40, ge=1, le=150),
+) -> dict:
+    """Edges for the contractor-MP network graph: the strongest FLAGGED MP <-> vendor relationships.
+
+    An edge is one (MP unit, vendor) pair that the contractor-concentration rule flags (same thresholds
+    and same minimum-volume guards as `rank_contractors` / the rule engine): the vendor holds >= the
+    share threshold of that unit's transaction count or value. Ranked by the vendor's share of the
+    unit's value, then by value. Scoped like every pattern endpoint (whole units, so shares stay true).
+    Only ids/names/aggregates are returned, never any synthetic-data label.
+    """
+    uscope, sparams = _unit_scope(user)
+    rows = db.execute(
+        text(
+            f"""
+            WITH per AS (
+                SELECT vt.mp_name, vt.constituency, max(vt.state) AS state,
+                       COALESCE(NULLIF(vt.vendor, ''), 'UNKNOWN') AS vendor,
+                       count(*) AS vc, COALESCE(sum(vt.amount), 0) AS vv
+                FROM vendor_transactions vt
+                WHERE 1=1{uscope}
+                GROUP BY vt.mp_name, vt.constituency, 4
+            ),
+            unit AS (
+                SELECT mp_name, constituency, sum(vc) AS uc, sum(vv) AS uv, count(*) AS nvendors
+                FROM per GROUP BY 1, 2
+            )
+            SELECT p.mp_name, p.constituency, p.state, p.vendor, p.vc, p.vv,
+                   p.vc::float / NULLIF(u.uc, 0) AS sc,
+                   p.vv / NULLIF(u.uv, 0) AS sv,
+                   u.uc, u.uv
+            FROM per p
+            JOIN unit u ON u.mp_name = p.mp_name AND u.constituency IS NOT DISTINCT FROM p.constituency
+            WHERE u.nvendors >= 2 AND u.uc >= :min_unit AND p.vc >= :min_vendor
+              AND (p.vc::float / NULLIF(u.uc, 0) >= :thr OR p.vv / NULLIF(u.uv, 0) >= :thr)
+            ORDER BY sv DESC NULLS LAST, p.vv DESC, p.mp_name, p.vendor
+            LIMIT :lim
+            """
+        ),
+        {
+            "thr": CONTRACTOR_SHARE_THRESHOLD,
+            "min_unit": CONTRACTOR_MIN_UNIT_TXNS,
+            "min_vendor": CONTRACTOR_MIN_VENDOR_TXNS,
+            "lim": limit,
+            **sparams,
+        },
+    ).all()
+    return {
+        "scope_label": scope_label(user),
+        "share_threshold": CONTRACTOR_SHARE_THRESHOLD,
+        "edges": [
+            {
+                "mp_name": r.mp_name, "constituency": r.constituency, "state": r.state,
+                "vendor": r.vendor, "txn_count": r.vc, "txn_value": round(float(r.vv), 2),
+                "share_of_unit_count": round(float(r.sc or 0), 3),
+                "share_of_unit_value": round(float(r.sv or 0), 3),
+                "unit_txn_count": r.uc, "unit_txn_value": round(float(r.uv), 2),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/districts/{district}/pattern", response_model=DistrictPattern)
 def district_pattern(
     district: str,
     db: Session = Depends(get_db), user: User = Depends(current_user),
     threshold: float = Query(70, ge=0, le=100),
+    state: str | None = Query(None, description="state the district is in (district names repeat across states)"),
 ) -> DistrictPattern:
     scope, sparams = scope_sql(user, "p")
+    st_cond = " AND upper(p.work_state) = upper(:st)" if state else ""
+    if state:
+        sparams = {**sparams, "st": state}
     summary = db.execute(
         text(
             f"""
@@ -168,7 +301,7 @@ def district_pattern(
                    count(*) FILTER (WHERE rf.combined_risk_score >= :thr) AS high_risk
             FROM projects p
             JOIN risk_flags rf ON rf.project_id = p.id
-            WHERE upper(p.district) = upper(:d){scope}
+            WHERE upper(p.district) = upper(:d){st_cond}{scope}
             """
         ),
         {"d": district, "thr": threshold, **sparams},
@@ -184,7 +317,7 @@ def district_pattern(
                    avg(rf.combined_risk_score) AS avg_risk
             FROM projects p
             JOIN risk_flags rf ON rf.project_id = p.id
-            WHERE upper(p.district) = upper(:d){scope}
+            WHERE upper(p.district) = upper(:d){st_cond}{scope}
             GROUP BY 1
             ORDER BY n DESC
             """
@@ -194,6 +327,7 @@ def district_pattern(
 
     return DistrictPattern(
         district=district.upper(),
+        state=state,
         project_count=summary.n,
         avg_risk_score=round(float(summary.avg_risk or 0), 1),
         high_risk_count=summary.high_risk,

@@ -26,7 +26,7 @@ class ChangePasswordIn(BaseModel):
 
 def _profile(user: User) -> dict:
     return {"username": user.username, "role": user.role,
-            "scope_value": user.scope_value, "scope_label": scope_label(user),
+            "scope_value": user.scope_value, "scope_state": user.scope_state, "scope_label": scope_label(user),
             "must_change_password": bool(user.must_change_password)}
 
 

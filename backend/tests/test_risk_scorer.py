@@ -169,3 +169,17 @@ def test_rule_flags_dict_shape():
     assert len(risk_scorer.RULE_POINTS) == 6  # the six rules in the spec
     assert out.loc[1, "rule_flags"]["stalled_project"] is False
     assert out.loc[2, "rule_flags"]["stalled_project"] is True
+
+
+def test_duplicate_explanation_carries_counterpart_id_and_similarity():
+    idx = pd.Index([1, 2, 3, 4, 5], name="project_id")
+    dup = pd.DataFrame({
+        "flagged": [False, True, False, False, False],
+        "reason": [None, "Near-identical work also recorded for this MP on 01 Jan 2026 (similarity 96%)", None, None, None],
+        "partner_id": [-1, 44, -1, -1, -1], "similarity": [0, 96, 0, 0, 0],
+    }, index=idx)
+    out = risk_scorer.combine(PROJECTS, _cost(), _stalled(), _contractor(), _payment(), _ml(),
+                              duplicate_df=dup)
+    item = next(e for e in out.loc[2, "explanation"] if e["code"] == "duplicate_work")
+    assert item["counterpart_id"] == 44 and item["similarity"] == 96
+    assert all("counterpart_id" not in e for e in out.loc[1, "explanation"])

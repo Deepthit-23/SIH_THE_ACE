@@ -35,6 +35,7 @@ class UserOut(BaseModel):
     username: str
     role: str
     scope_value: str | None
+    scope_state: str | None = None     # district accounts only: the state half of the (state, district) pair
     scope_label: str
     is_active: bool
     must_change_password: bool
@@ -45,6 +46,7 @@ class UserCreate(BaseModel):
     username: str = Field(pattern=USERNAME_PATTERN)
     role: str
     scope_value: str | None = None
+    scope_state: str | None = None     # required for district_authority, forbidden otherwise
     temp_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=128)
 
 
@@ -55,7 +57,7 @@ class UserPatch(BaseModel):
 
 def _out(u: User) -> UserOut:
     return UserOut(
-        id=u.id, username=u.username, role=u.role, scope_value=u.scope_value,
+        id=u.id, username=u.username, role=u.role, scope_value=u.scope_value, scope_state=u.scope_state,
         scope_label=scope_label(u), is_active=bool(u.is_active),
         must_change_password=bool(u.must_change_password), created_at=u.created_at,
     )
@@ -69,24 +71,42 @@ def _actor(admin: User) -> str:
     return f"{admin.role}:{admin.username}"
 
 
-def _canonical_scope(db: Session, role: str, scope_value: str | None) -> str | None:
-    """Validate a scope against the real data and return it in its stored casing.
+def _canonical_scope(db: Session, role: str, scope_value: str | None,
+                     scope_state: str | None = None) -> tuple[str | None, str | None]:
+    """Validate a scope against the real data; return (scope_value, scope_state) in stored casing.
 
-    A scope that matches nothing would create an account that silently sees an empty dashboard,
-    so it is rejected instead of accepted.
+    A scope that matches nothing would create an account that silently sees an empty dashboard, so it is
+    rejected. A DISTRICT scope is a (state, district) pair, because district names repeat across states;
+    the state is the state the work is located in (work_state), and the pair must exist in the data.
     """
     value = (scope_value or "").strip()
+    state = (scope_state or "").strip()
     if role == "ministry":
-        if value:
+        if value or state:
             raise HTTPException(422, "the ministry role is national and takes no scope")
-        return None
+        return None, None
+    if role != "district_authority" and state:
+        raise HTTPException(422, "scope_state applies to district accounts only")
     if not value:
         raise HTTPException(422, f"a {SCOPE_LABEL[role]} scope is required for this role")
-    col = getattr(Project, SCOPE_COLUMN[role])
+    if role == "district_authority":
+        if not state:
+            raise HTTPException(422, "a district scope needs its state (district names repeat across states)")
+        row = db.execute(
+            text(
+                "SELECT district, work_state FROM projects "
+                "WHERE lower(district) = lower(:d) AND lower(work_state) = lower(:s) LIMIT 1"
+            ),
+            {"d": value, "s": state},
+        ).first()
+        if row is None:
+            raise HTTPException(422, f"no district '{value}' in '{state}' exists in the data")
+        return row[0], row[1]
+    col = getattr(Project, SCOPE_COLUMN[role])          # state -> work_state, mp -> mp_name
     found = db.scalar(select(col).where(func.lower(col) == value.lower()).limit(1))
     if found is None:
         raise HTTPException(422, f"no {SCOPE_LABEL[role]} named '{value}' exists in the data")
-    return found
+    return found, None
 
 
 @router.get("/users", response_model=list[UserOut])
@@ -100,9 +120,9 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), admin: User = D
         raise HTTPException(422, f"role must be one of {sorted(ROLES)}")
     if db.scalar(select(User.id).where(func.lower(User.username) == body.username.lower())):
         raise HTTPException(409, "that username is already taken")
-    scope = _canonical_scope(db, body.role, body.scope_value)
+    scope, scope_state = _canonical_scope(db, body.role, body.scope_value, body.scope_state)
     user = User(
-        username=body.username, role=body.role, scope_value=scope,
+        username=body.username, role=body.role, scope_value=scope, scope_state=scope_state,
         password_hash=hash_password(body.temp_password),   # bcrypt; plaintext is never stored
         is_active=True, must_change_password=True,
     )
@@ -110,7 +130,7 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), admin: User = D
     try:
         db.flush()
         audit.append_admin_event(
-            db, "user_created", _actor(admin), user.username, user.role, user.scope_value, _now(),
+            db, "user_created", _actor(admin), user.username, user.role, scope_label(user), _now(),
             detail="must change password at first login",
         )
         db.commit()
@@ -145,13 +165,13 @@ def patch_user(user_id: int, body: UserPatch, db: Session = Depends(get_db),
         user.is_active = body.is_active
         audit.append_admin_event(
             db, "user_reactivated" if body.is_active else "user_deactivated", actor,
-            user.username, user.role, user.scope_value, now,
+            user.username, user.role, scope_label(user), now,
         )
     if body.reset_password is not None:
         user.password_hash = hash_password(body.reset_password)
         user.must_change_password = True
         audit.append_admin_event(
-            db, "password_reset", actor, user.username, user.role, user.scope_value, now,
+            db, "password_reset", actor, user.username, user.role, scope_label(user), now,
             detail="must change password at next login",
         )
     db.commit()
@@ -169,14 +189,16 @@ def scope_options(
     """Values a new user's scope can take, straight from the data: [{value, label}].
     `mp` is a search (q, min 2 chars); state / district return the full list."""
     if kind == "state":
-        rows = db.execute(text("SELECT DISTINCT state FROM projects WHERE state IS NOT NULL ORDER BY 1")).scalars()
+        rows = db.execute(text("SELECT DISTINCT work_state FROM projects WHERE work_state IS NOT NULL ORDER BY 1")).scalars()
         return [{"value": s, "label": s} for s in rows]
     if kind == "district":
         rows = db.execute(text(
-            "SELECT district, string_agg(DISTINCT state, ', ' ORDER BY state) FROM projects "
-            "WHERE district IS NOT NULL GROUP BY district ORDER BY district"
+            "SELECT work_state AS st, district FROM projects "
+            "WHERE district IS NOT NULL AND work_state IS NOT NULL "
+            "GROUP BY 1, 2 ORDER BY 2, 1"
         )).all()
-        return [{"value": d, "label": f"{d} ({s})" if s else d} for d, s in rows]
+        # one entry per (state, district) PAIR: two states can have a district of the same name
+        return [{"value": d, "state": st, "label": f"{d} ({st})"} for st, d in rows]
     term = (q or "").strip()
     if len(term) < 2:
         return []

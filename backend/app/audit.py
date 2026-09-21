@@ -67,6 +67,17 @@ def chain_hash(payload: dict, previous_hash: str) -> str:
     return _sha256(_payload_json(payload) + previous_hash)
 
 
+# Every appender reads the chain tail and links the new entry to it, so two concurrent writers would both
+# link to the same tail and FORK the chain (verify then fails at the second one). Appends are therefore
+# serialised with a transaction-level advisory lock, taken before the tail is read and released at commit /
+# rollback, i.e. it is held for exactly as long as the domain change it belongs to.
+CHAIN_LOCK_KEY = 0x4D504C41
+
+
+def lock_chain(conn) -> None:
+    conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": CHAIN_LOCK_KEY})
+
+
 def last_hash(conn) -> str:
     row = conn.execute(
         select(AuditLog.payload_hash).order_by(AuditLog.id.desc()).limit(1)
@@ -80,6 +91,7 @@ def append_entries(conn, records: list[tuple], event_type: str = EVENT_RISK_SCOR
     `records`: iterable of (project_id, combined_risk_score, explanation, timestamp).
     Must be called inside the same transaction as the risk_flags write.
     """
+    lock_chain(conn)
     prev = last_hash(conn)
     rows: list[dict] = []
     for project_id, score, explanation, ts in records:
@@ -131,6 +143,7 @@ def append_case_event(
     conn, project_id: int, status: str, note: str | None, reviewer: str | None, ts: datetime
 ) -> str:
     """Append one chained `case_review` entry. Same chain as scoring events."""
+    lock_chain(conn)
     prev = last_hash(conn)
     payload = {
         "event": EVENT_CASE_REVIEW,
@@ -164,6 +177,7 @@ def append_admin_event(
     Only identifiers go in: never a password, a hash, or any credential. `detail` is a short
     non-secret note (e.g. "must change password at next login").
     """
+    lock_chain(conn)
     prev = last_hash(conn)
     payload = {
         "event": EVENT_ADMIN_ACTION,

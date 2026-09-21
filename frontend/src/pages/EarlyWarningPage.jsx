@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
+import Meta from "../components/Meta";
 import { ScoreBar } from "../components/Severity";
 import { Empty, ErrorBox, Loading } from "../components/StateMessage";
 import { formatINR, text, titleCase } from "../lib/format";
@@ -24,18 +25,18 @@ export default function EarlyWarningPage({ role }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h2 className="text-lg font-semibold">Early warning</h2>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-ink-soft">
             {role === "mp_self"
               ? "Recent works in your portfolio that already look unusual."
               : "Recently recorded works that already score medium or high and are still awaiting review."}
           </p>
         </div>
-        <label className="flex items-center gap-2 text-xs text-slate-500">
+        <label className="flex items-center gap-2 text-xs text-ink-soft">
           Window
           <select
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
-            className="rounded border border-slate-300 bg-white px-2 py-1.5 text-sm"
+            className="rounded border border-hairline bg-surface px-2 py-1.5 text-sm"
           >
             {WINDOWS.map((d) => (
               <option key={d} value={d}>Last {d} days</option>
@@ -51,20 +52,20 @@ export default function EarlyWarningPage({ role }) {
       )}
       {status === "success" && data.items.length > 0 && (
         <>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-ink-soft">
             <span className="font-semibold">{data.total.toLocaleString()}</span> new flag{data.total === 1 ? "" : "s"}
             {data.total > data.items.length && ` (showing the top ${data.items.length})`}
           </p>
-          <ul className="divide-y divide-slate-100 rounded border border-slate-200 bg-white">
+          <ul className="divide-y divide-hairline rounded border border-hairline bg-surface">
             {data.items.map((p) => (
-              <li key={p.id} onClick={() => navigate(`/projects/${p.id}`)} className="flex cursor-pointer gap-4 px-4 py-3 hover:bg-slate-50">
+              <li key={p.id} onClick={() => navigate(`/projects/${p.id}`)} className="flex cursor-pointer gap-4 px-4 py-3 hover:bg-canvas">
                 <div className="w-36 shrink-0"><ScoreBar score={p.combined_risk_score} /></div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium text-slate-800">{text(p.work_description, "Untitled work")}</p>
-                  <p className="text-xs text-slate-500">
-                    {text(p.mp_name)} · {text(p.district)}, {text(p.state)} · {titleCase(p.status)} · {formatINR(p.amount)}
+                  <p className="truncate font-medium text-ink">{text(p.work_description, "Untitled work")}</p>
+                  <p className="text-xs text-ink-soft">
+                    <Meta items={[text(p.mp_name), `${text(p.district)}, ${text(p.work_state ?? p.state)}`, titleCase(p.status), <span className="fig">{formatINR(p.amount)}</span>]} />
                   </p>
-                  {p.top_reasons?.length > 0 && <p className="mt-0.5 truncate text-xs text-slate-500">{p.top_reasons.join("  ·  ")}</p>}
+                  {p.top_reasons?.length > 0 && <p className="mt-0.5 truncate text-xs text-ink-soft">{p.top_reasons.join("; ")}</p>}
                 </div>
               </li>
             ))}

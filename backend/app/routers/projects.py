@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -28,7 +28,9 @@ def list_projects(
     """Return projects from the DB (empty list is valid until Phase 2 loads data)."""
     filters = []
     if state:
-        filters.append(Project.state == state)
+        # geography filter = where the work is LOCATED (work_state), the same meaning as GET /risk-scores?state=.
+        # (Project.state is the MP's state.) The user's scope is ANDed on afterwards: a filter only narrows.
+        filters.append(func.upper(Project.work_state) == state.upper())
     if district:
         filters.append(Project.district == district)
 
@@ -55,6 +57,11 @@ def get_project(project_id: int, db: Session = Depends(get_db), user: User = Dep
         detail.ml_anomaly_score = rf.ml_anomaly_score
         detail.severity = severity_band(rf.combined_risk_score)
         detail.rule_flags = rf.rule_flags
+        detail.flagged_at = rf.flagged_at
+        detail.first_flagged_at = db.scalar(
+            text("SELECT min(timestamp) FROM audit_log WHERE project_id = :p AND event_type = 'risk_score'"),
+            {"p": project_id},
+        ) or rf.flagged_at
         detail.explanation = [
             ExplanationItem(**e) for e in (rf.explanation or []) if isinstance(e, dict)
         ]

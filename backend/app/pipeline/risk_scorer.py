@@ -158,6 +158,11 @@ def combine(
     allocation_reason = allocation_df["reason"].reindex(idx) if allocation_df is not None else pd.Series(index=idx, dtype=object)
     duplicate_flag = _reindex_flag(duplicate_df, idx)
     duplicate_reason = duplicate_df["reason"].reindex(idx) if duplicate_df is not None else pd.Series(index=idx, dtype=object)
+    have_partner = duplicate_df is not None and "partner_id" in duplicate_df.columns
+    duplicate_partner = (duplicate_df["partner_id"].reindex(idx).fillna(-1).astype(int).to_numpy()
+                         if have_partner else np.full(len(idx), -1))
+    duplicate_sim = (duplicate_df["similarity"].reindex(idx).fillna(0).astype(int).to_numpy()
+                     if have_partner else np.zeros(len(idx), dtype=int))
 
     # contractor: flagged at (mp, vendor, unit) -> reduce to MP + best reason
     cflag = contractor_df[contractor_df["flagged"]].copy() if contractor_df is not None else pd.DataFrame()
@@ -250,13 +255,18 @@ def combine(
         for code in _RULE_ORDER:
             if flags_np[code][i]:
                 msg = reason_cols[code].iloc[i]
-                items.append({
+                item = {
                     "source": "rule",
                     "code": code,
                     "label": _RULE_LABEL[code],
                     "weight": RULE_POINTS[code],
                     "message": msg if isinstance(msg, str) and msg else _RULE_LABEL[code],
-                })
+                }
+                if code == "duplicate_work" and duplicate_partner[i] >= 0:
+                    # lets the UI open a side-by-side comparison with the matched work
+                    item["counterpart_id"] = int(duplicate_partner[i])
+                    item["similarity"] = int(duplicate_sim[i])
+                items.append(item)
         if include_ml_np[i]:
             fired = [c for c in RULE_POINTS if flags_np[c][i]]
             if ml_fragments is not None:

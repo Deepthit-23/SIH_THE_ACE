@@ -1,12 +1,14 @@
 import { severityFor, SEVERITY } from "../lib/format";
+import { T } from "../lib/tokens";
 
+// Rule signals in ink shades, the anomaly model in the neutral warm grey, so the two sources read apart.
 const RULE_FILL = {
-  cost_anomaly: "#475569",
-  contractor_concentration: "#64748b",
-  payment_gap: "#94a3b8",
-  stalled_project: "#cbd5e1",
+  cost_anomaly: T.ink,
+  contractor_concentration: T.inkSoft,
+  payment_gap: T.inkFaint,
+  stalled_project: T.hairline,
 };
-const ML_FILL = "#6366f1";
+const ML_FILL = T.clear;
 
 /**
  * Visual decomposition of the 0–100 score: one segment per triggered rule
@@ -20,7 +22,7 @@ export default function ScoreBreakdown({ explanation = [], ruleScore, mlScore, c
       label: e.label,
       source: e.source,
       weight: Math.max(0, Number(e.weight) || 0),
-      fill: e.source === "ml" ? ML_FILL : RULE_FILL[e.code] || "#94a3b8",
+      fill: e.source === "ml" ? ML_FILL : RULE_FILL[e.code] || T.inkFaint,
     }))
     .filter((s) => s.weight > 0);
 
@@ -30,18 +32,17 @@ export default function ScoreBreakdown({ explanation = [], ruleScore, mlScore, c
   const meta = SEVERITY[severityFor(combined)];
 
   return (
-    <div className="rounded border border-slate-200 bg-white p-5">
+    <div className="rounded border border-hairline bg-surface p-5">
       <div className="flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-slate-800">How the score is built</h3>
-        <span className="text-xs text-slate-500">
-          rule signal {Math.round(ruleScore ?? 0)} · model {Math.round(mlScore ?? 0)} →{" "}
-          <span className="font-semibold" style={{ color: meta.fill }}>
-            {Math.round(combined ?? 0)}
-          </span>
+        <h3 className="text-sm font-semibold text-ink">How the score is built</h3>
+        <span className="text-xs text-ink-soft">
+          rule signal <span className="fig">{Math.round(ruleScore ?? 0)}</span>, model{" "}
+          <span className="fig">{Math.round(mlScore ?? 0)}</span>, combined{" "}
+          <span className={`fig font-semibold ${meta.text}`}>{Math.round(combined ?? 0)}</span>
         </span>
       </div>
 
-      <div className="mt-3 flex h-5 w-full overflow-hidden rounded bg-slate-100">
+      <div className="mt-3 flex h-5 w-full overflow-hidden rounded bg-canvas">
         {segs.map((s, i) => (
           <div
             key={i}
@@ -54,17 +55,17 @@ export default function ScoreBreakdown({ explanation = [], ruleScore, mlScore, c
       <ul className="mt-3 space-y-1">
         {segs.map((s, i) => (
           <li key={i} className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-2 text-slate-600">
+            <span className="flex items-center gap-2 text-ink-soft">
               <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: s.fill }} />
               {s.label}
-              {s.source === "ml" && <span className="text-slate-400">(anomaly model)</span>}
+              {s.source === "ml" && <span className="text-ink-faint">(anomaly model)</span>}
             </span>
-            <span className="tabular-nums text-slate-500">{Math.round(s.weight)}</span>
+            <span className="tabular-nums text-ink-soft">{Math.round(s.weight)}</span>
           </li>
         ))}
       </ul>
 
-      <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+      <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
         Rule weights are fixed points per rule; the model's share rises only for
         genuine statistical outliers. The combined score then applies a
         diminishing-returns curve, so stacking signals can't trivially pin a

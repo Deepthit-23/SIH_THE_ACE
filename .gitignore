@@ -36,3 +36,6 @@ Thumbs.db
 
 # Docker
 pgdata/
+
+# Database dumps: contain user password hashes and the full audit chain. Never commit.
+*.dump

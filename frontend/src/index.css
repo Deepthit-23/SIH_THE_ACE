@@ -8,6 +8,50 @@ body,
   height: 100%;
 }
 
-body {
-  @apply bg-slatebg text-ink antialiased;
+@layer base {
+  body {
+    @apply bg-canvas font-sans text-sm text-ink antialiased;
+    font-feature-settings: "tnum" 1; /* tabular figures everywhere: columns of numbers line up */
+  }
+
+  /* one focus treatment for the whole tool */
+  :focus-visible {
+    outline: 2px solid theme("colors.accent");
+    outline-offset: 2px;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+
+  ::placeholder {
+    color: theme("colors.ink.faint");
+  }
+}
+
+@layer components {
+  /* Figures: scores, hashes, work IDs, money. The only place the mono face is used. */
+  .fig {
+    @apply font-mono tabular-nums;
+  }
+
+  /* Small sentence-case field label (no capitals, no tracking). */
+  .label {
+    @apply text-xs font-medium text-ink-soft;
+  }
+
+  .field {
+    @apply h-[38px] w-full border border-hairline bg-surface px-2.5 py-2 text-sm text-ink;
+  }
+
+  .btn {
+    @apply border border-hairline bg-surface px-3 py-1.5 text-sm font-medium text-ink hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-primary {
+    @apply border border-ink bg-ink px-4 py-2 text-sm font-medium text-surface hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-40;
+  }
 }

@@ -1,0 +1,12 @@
+India state boundaries (india-states.json)
+
+Source: DataMeet India community, https://github.com/datameet/maps  (States/Admin2.shp)
+License: Creative Commons Attribution 4.0 International (CC BY 4.0), per the repository README:
+"Unless explicitly stated, all datasets in this repository is shared under CC BY 4.0."
+https://creativecommons.org/licenses/by/4.0/
+
+Modifications (this project): geometry simplified with mapshaper (1.5%, keep-shapes, 0.001 degree
+precision); properties replaced by { state, source_name } where `state` is this application's
+canonical state name (see the name-matching note in the README). No boundaries were edited.
+
+Attribution shown in the UI: "India state boundaries by DataMeet India community (CC BY 4.0)".

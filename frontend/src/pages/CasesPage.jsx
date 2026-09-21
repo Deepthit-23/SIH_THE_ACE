@@ -24,13 +24,13 @@ export default function CasesPage() {
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Case log</h2>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-ink-soft">
           Every flag an auditor has acted on. Dismissals record a reason — the
           feedback a production system would use to tune thresholds and retrain.
         </p>
       </div>
 
-      <div className="flex gap-1 border-b border-slate-200">
+      <div className="flex gap-1 border-b border-hairline">
         {TABS.map((t) => (
           <button
             key={t.value}
@@ -38,8 +38,8 @@ export default function CasesPage() {
             className={
               "px-3 py-1.5 text-sm " +
               (tab === t.value
-                ? "border-b-2 border-slate-800 font-medium text-ink"
-                : "text-slate-500 hover:text-ink")
+                ? "border-b-2 border-ink-faint font-medium text-ink"
+                : "text-ink-soft hover:text-ink")
             }
           >
             {t.label}
@@ -54,9 +54,9 @@ export default function CasesPage() {
       )}
 
       {status === "success" && data.items.length > 0 && (
-        <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+        <div className="overflow-x-auto rounded border border-hairline bg-surface">
           <table className="min-w-full text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+            <thead className="border-b border-hairline bg-canvas text-left text-xs font-medium text-ink-soft">
               <tr>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Project</th>
@@ -65,9 +65,9 @@ export default function CasesPage() {
                 <th className="px-3 py-2">Updated</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-hairline">
               {data.items.map((c) => (
-                <tr key={c.project_id} className="hover:bg-slate-50">
+                <tr key={c.project_id} className="hover:bg-canvas">
                   <td className="px-3 py-2.5">
                     <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${CASE_STATUS[c.status]?.chip || ""}`}>
                       {CASE_STATUS[c.status]?.label || c.status}
@@ -77,19 +77,19 @@ export default function CasesPage() {
                     <Link
                       to={`/projects/${c.project_id}`}
                       title={text(c.work_description, "")}
-                      className="block max-w-[22rem] truncate font-medium text-slate-800 hover:underline"
+                      className="block max-w-[22rem] truncate font-medium text-ink hover:underline"
                     >
                       {text(c.work_description, `Project ${c.project_id}`)}
                     </Link>
-                    <p className="text-xs text-slate-400">{text(c.mp_name)}</p>
+                    <p className="text-xs text-ink-faint">{text(c.mp_name)}</p>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5"><SeverityBadge score={c.combined_risk_score} /></td>
-                  <td className="px-3 py-2.5 text-xs text-slate-600">
+                  <td className="px-3 py-2.5 text-xs text-ink-soft">
                     <span className="block max-w-[24rem] truncate" title={text(c.note, "")}>
                       {text(c.note, "—")}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5 text-xs text-slate-400">{fmtDateTime(c.updated_at)}</td>
+                  <td className="px-3 py-2.5 text-xs text-ink-faint">{fmtDateTime(c.updated_at)}</td>
                 </tr>
               ))}
             </tbody>

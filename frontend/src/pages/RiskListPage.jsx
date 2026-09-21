@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import Filters from "../components/Filters";
+import Meta from "../components/Meta";
 import NationalHeader from "../components/NationalHeader";
 import { ScoreBar } from "../components/Severity";
 import { Empty, ErrorBox, Loading } from "../components/StateMessage";
@@ -14,20 +15,23 @@ const DEFAULT = {
   status: undefined, case_status: undefined, offset: 0,
 };
 
+// fixed layout: the project column takes what the rest leave, so the table never scrolls sideways
 const COLUMNS = [
-  { key: "risk", label: "Risk", sortable: true },
-  { key: "project", label: "Project", sortable: false },
-  { key: "mp", label: "MP / Constituency", sortable: false },
-  { key: "district", label: "District", sortable: false },
-  { key: "category", label: "Category", sortable: false },
-  { key: "case", label: "Case", sortable: false },
-  { key: "amount", label: "Amount", sortable: true, align: "right" },
+  { key: "risk", label: "Risk", sortable: true, w: "w-[76px]" },
+  { key: "project", label: "Project" },
+  { key: "mp", label: "MP and constituency", w: "w-[188px]" },
+  { key: "district", label: "District", w: "w-[132px]" },
+  { key: "category", label: "Category", w: "w-[112px]" },
+  { key: "case", label: "Case", w: "w-[104px]" },
+  { key: "amount", label: "Amount", sortable: true, align: "right", w: "w-[104px]" },
 ];
 
 export default function RiskListPage({ role, scopeLabel }) {
   const isMp = role === "mp_self";
   const navigate = useNavigate();
-  const [filters, setFilters] = useState(DEFAULT);
+  const [searchParams] = useSearchParams();
+  // deep link from the state map: /?state=Karnataka
+  const [filters, setFilters] = useState(() => ({ ...DEFAULT, state: searchParams.get("state") || undefined }));
   const [sort, setSort] = useState({ by: "risk", order: "desc" });
   const [rawQuery, setRawQuery] = useState("");
   const [query, setQuery] = useState("");
@@ -62,9 +66,7 @@ export default function RiskListPage({ role, scopeLabel }) {
 
   const toggleSort = (key) => {
     if (!["risk", "amount"].includes(key)) return;
-    setSort((s) =>
-      s.by === key ? { by: key, order: s.order === "desc" ? "asc" : "desc" } : { by: key, order: "desc" },
-    );
+    setSort((s) => (s.by === key ? { by: key, order: s.order === "desc" ? "asc" : "desc" } : { by: key, order: "desc" }));
   };
 
   const page = data ? Math.floor(data.offset / PAGE_SIZE) + 1 : 1;
@@ -82,163 +84,154 @@ export default function RiskListPage({ role, scopeLabel }) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <NationalHeader />
 
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h2 className="text-lg font-semibold">{isMp ? "Flagged in your portfolio" : "Ranked risk list"}</h2>
-          <p className="text-sm text-slate-500">
-            {isMp
-              ? `Here is what has been flagged across your recommended and completed works (${scopeLabel}). Flags are prompts for review, not findings.`
-              : "Projects ordered by combined risk score (rule engine + anomaly model)."}
-          </p>
+      <section>
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+          <div>
+            <h2 className="text-xl font-semibold">{isMp ? "Flagged in your portfolio" : "Ranked risk list"}</h2>
+            <p className="mt-1 max-w-[62ch] text-ink-soft">
+              {isMp
+                ? `Everything flagged across your recommended and completed works (${scopeLabel}). Flags are prompts for review, not findings.`
+                : "Works ordered by combined risk score, from the rule engine and the anomaly model."}
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            {data && <span className="text-sm text-ink-soft"><span className="fig text-ink">{data.total.toLocaleString("en-IN")}</span> works</span>}
+            <button onClick={() => { setFilters(DEFAULT); setRawQuery(""); }} className="btn">Reset filters</button>
+            <button onClick={exportCsv} disabled={exporting} className="btn">
+              {exporting ? "Exporting" : "Export CSV"}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {data && <span className="text-xs text-slate-500">{data.total.toLocaleString()} projects</span>}
-          <button
-            onClick={exportCsv}
-            disabled={exporting}
-            className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-          >
-            {exporting ? "Exporting…" : "Export CSV"}
-          </button>
-        </div>
-      </div>
 
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-xs text-slate-500">
-          Search MP / work / Work ID
-          <input
-            value={rawQuery}
-            onChange={(e) => setRawQuery(e.target.value)}
-            placeholder="e.g. RAHUL GANDHI, street light, 178989"
-            className="w-72 rounded border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-400 focus:outline-none"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-slate-500">
-          Case status
-          <select
-            value={filters.case_status ?? ""}
-            onChange={(e) => setFilters((f) => ({ ...f, case_status: e.target.value || undefined, offset: 0 }))}
-            className="rounded border border-slate-300 bg-white px-2 py-1.5 text-sm focus:border-slate-400 focus:outline-none"
-          >
-            <option value="">All</option>
-            <option value="pending">Pending</option>
-            <option value="under_review">Under review</option>
-            <option value="confirmed">Confirmed</option>
-            <option value="dismissed">Dismissed</option>
-          </select>
-        </label>
-      </div>
-
-      <Filters
-        value={filters}
-        options={options.data}
-        onChange={setFilters}
-        onReset={() => { setFilters(DEFAULT); setRawQuery(""); }}
-      />
-
-      {status === "loading" && <Loading label="Scoring projects…" />}
-      {status === "error" && <ErrorBox error={error} onRetry={reload} />}
-
-      {status === "success" && data.items.length === 0 && (
-        <Empty>No projects match these filters. Try widening the search or lowering the minimum score.</Empty>
-      )}
-
-      {status === "success" && data.items.length > 0 && (
-        <>
-          <div className="overflow-x-auto rounded border border-slate-200 bg-white">
-            <table className="min-w-full text-sm">
-              <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-                <tr>
-                  {COLUMNS.map((c) => (
-                    <th
-                      key={c.key}
-                      className={`px-3 py-2 ${c.align === "right" ? "text-right" : ""} ${
-                        c.sortable ? "cursor-pointer select-none hover:text-slate-700" : ""
-                      }`}
-                      onClick={() => c.sortable && toggleSort(c.key)}
-                    >
-                      {c.label}
-                      {c.sortable && sort.by === c.key && (
-                        <span className="ml-1">{sort.order === "desc" ? "▾" : "▴"}</span>
-                      )}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {data.items.map((p) => (
-                  <tr
-                    key={p.id}
-                    onClick={() => navigate(`/projects/${p.id}`)}
-                    className="cursor-pointer hover:bg-slate-50"
+        {/* one filter row, ruled off from the table: search and case status first, then the shared filters */}
+        <div className="mt-5 border-t border-hairline pt-4">
+          <Filters
+            value={filters}
+            options={options.data}
+            onChange={setFilters}
+            lead={
+              <>
+                <label className="flex flex-col gap-1">
+                  <span className="label">Search MP, work or work ID</span>
+                  <input
+                    value={rawQuery}
+                    onChange={(e) => setRawQuery(e.target.value)}
+                    placeholder="MP name, street light, 178989"
+                    className="field w-64"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="label">Case status</span>
+                  <select
+                    value={filters.case_status ?? ""}
+                    onChange={(e) => setFilters((f) => ({ ...f, case_status: e.target.value || undefined, offset: 0 }))}
+                    className="field w-36"
                   >
-                    <td className="px-3 py-2.5">
-                      <ScoreBar score={p.combined_risk_score} />
-                    </td>
-                    <td className="max-w-sm px-3 py-2.5">
-                      <p className="truncate font-medium text-slate-800" title={text(p.work_description, "")}>
-                        {text(p.work_description, "Untitled work")}
-                      </p>
-                      <p className="text-xs text-slate-400">
-                        {text(p.external_id, "no id")} · {titleCase(p.status)}
-                      </p>
-                      {p.top_reasons?.length > 0 && (
-                        <p className="mt-0.5 truncate text-xs text-slate-500" title={p.top_reasons.join(" · ")}>
-                          {p.top_reasons.join("  ·  ")}
-                        </p>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <p className="text-slate-700">{text(p.mp_name)}</p>
-                      <p className="text-xs text-slate-400">{text(p.constituency)}</p>
-                    </td>
-                    <td className="px-3 py-2.5 text-slate-600">
-                      {text(p.district)}
-                      <span className="block text-xs text-slate-400">{text(p.state)}</span>
-                    </td>
-                    <td className="px-3 py-2.5 text-slate-600">{titleCase(p.derived_category) || "—"}</td>
-                    <td className="px-3 py-2.5">
-                      {p.case_status !== "pending" && (
-                        <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${CASE_STATUS[p.case_status]?.chip || ""}`}>
-                          {CASE_STATUS[p.case_status]?.label || p.case_status}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">
-                      {formatINR(p.amount)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    <option value="">All</option>
+                    <option value="pending">Pending</option>
+                    <option value="under_review">Under review</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="dismissed">Dismissed</option>
+                  </select>
+                </label>
+              </>
+            }
+          />
+        </div>
 
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-slate-500">
-              Page {page} of {pageCount.toLocaleString()}
-            </span>
-            <div className="flex gap-2">
-              <button
-                disabled={filters.offset === 0}
-                onClick={() => setFilters((f) => ({ ...f, offset: Math.max(0, f.offset - PAGE_SIZE) }))}
-                className="rounded border border-slate-300 px-3 py-1 text-xs font-medium disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <button
-                disabled={page >= pageCount}
-                onClick={() => setFilters((f) => ({ ...f, offset: f.offset + PAGE_SIZE }))}
-                className="rounded border border-slate-300 px-3 py-1 text-xs font-medium disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        </>
-      )}
+        <div className="mt-6">
+          {status === "loading" && <Loading label="Scoring works" />}
+          {status === "error" && <ErrorBox error={error} onRetry={reload} />}
+          {status === "success" && data.items.length === 0 && (
+            <Empty>No works match these filters. Widen the search or lower the minimum score.</Empty>
+          )}
+
+          {status === "success" && data.items.length > 0 && (
+            <>
+              <div className="overflow-x-auto border border-hairline bg-surface">
+                <table className="w-full table-fixed text-sm">
+                  <thead>
+                    <tr className="border-b border-ink text-left text-xs font-medium text-ink-soft">
+                      {COLUMNS.map((c) => (
+                        <th
+                          key={c.key}
+                          scope="col"
+                          className={`px-3 py-2.5 ${c.w ?? ""} ${c.align === "right" ? "text-right" : ""} ${c.sortable ? "cursor-pointer select-none hover:text-ink" : ""}`}
+                          onClick={() => c.sortable && toggleSort(c.key)}
+                          aria-sort={c.sortable && sort.by === c.key ? (sort.order === "desc" ? "descending" : "ascending") : undefined}
+                        >
+                          {c.label}
+                          {c.sortable && sort.by === c.key && <span className="ml-1 text-ink">{sort.order === "desc" ? "▾" : "▴"}</span>}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.items.map((p) => (
+                      <tr
+                        key={p.id}
+                        onClick={() => navigate(`/projects/${p.id}`)}
+                        className="cursor-pointer border-b border-hairline last:border-b-0 hover:bg-canvas"
+                      >
+                        <td className="px-3 py-3 align-top"><ScoreBar score={p.combined_risk_score} /></td>
+                        <td className="px-3 py-3 align-top">
+                          <p className="truncate font-medium" title={text(p.work_description, "")}>
+                            {text(p.work_description, "Untitled work")}
+                          </p>
+                          <p className="mt-0.5 text-xs text-ink-soft">
+                            <Meta items={[<span className="fig">{text(p.external_id, "no id")}</span>, titleCase(p.status)]} />
+                          </p>
+                          {p.top_reasons?.length > 0 && (
+                            <p className="mt-1 truncate text-xs text-ink-soft" title={p.top_reasons.join(" / ")}>
+                              {p.top_reasons.join("  ")}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 align-top">
+                          <p>{text(p.mp_name)}</p>
+                          <p className="text-xs text-ink-soft">{text(p.constituency)}</p>
+                        </td>
+                        <td className="px-3 py-3 align-top">
+                          <p>{text(p.district)}</p>
+                          <p className="text-xs text-ink-soft">
+                            {p.work_state ? p.work_state : p.district ? "location unresolved" : "no location recorded"}
+                          </p>
+                        </td>
+                        <td className="px-3 py-3 align-top text-ink-soft">{titleCase(p.derived_category) || "-"}</td>
+                        <td className="px-3 py-3 align-top">
+                          {p.case_status !== "pending" && (
+                            <span className={`inline-block px-2 py-0.5 text-xs font-medium ${CASE_STATUS[p.case_status]?.chip || ""}`}>
+                              {CASE_STATUS[p.case_status]?.label || p.case_status}
+                            </span>
+                          )}
+                        </td>
+                        <td className="fig px-3 py-3 text-right align-top">{formatINR(p.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between">
+                <span className="text-sm text-ink-soft">
+                  Page <span className="fig text-ink">{page}</span> of <span className="fig text-ink">{pageCount.toLocaleString("en-IN")}</span>
+                </span>
+                <div className="flex gap-2">
+                  <button disabled={filters.offset === 0} onClick={() => setFilters((f) => ({ ...f, offset: Math.max(0, f.offset - PAGE_SIZE) }))} className="btn">
+                    Previous
+                  </button>
+                  <button disabled={page >= pageCount} onClick={() => setFilters((f) => ({ ...f, offset: f.offset + PAGE_SIZE }))} className="btn">
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

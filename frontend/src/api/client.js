@@ -54,9 +54,11 @@ export const api = {
   createUser: (body) => request("/admin/users", { method: "POST", body: JSON.stringify(body) }),
   patchUser: (id, body) => request(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   scopeOptions: (kind, q) => request(`/admin/scope-options${qs({ kind, q })}`),
+  publicSummary: () => request("/meta/public-summary"),   // unauthenticated: the sign-in page runs before login
   filters: () => request("/meta/filters"),
   summary: () => request("/meta/summary"),
   auditVerify: () => request("/audit/verify"),
+  auditRecent: (limit = 6) => request(`/audit/recent${qs({ limit })}`),
 
   riskScores: (params) => request(`/risk-scores${qs(params)}`),
   // The export needs the bearer token, so it can't be a plain <a href>.
@@ -84,6 +86,8 @@ export const api = {
   caseHistory: (id) => request(`/projects/${id}/case/history`),
   cases: (params) => request(`/cases${qs(params)}`),
 
+  stateAggregates: (params) => request(`/patterns/states${qs(params)}`),
+  contractorNetwork: (params) => request(`/patterns/network${qs(params)}`),
   rankDistricts: (params) => request(`/patterns/districts${qs(params)}`),
   rankContractors: (params) => request(`/patterns/contractors${qs(params)}`),
   districtPattern: (name, params) =>

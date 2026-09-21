@@ -384,6 +384,10 @@ def main(argv: list[str] | None = None) -> int:
         kinds = df["anomaly_type"].value_counts().to_dict()
         print(f"  +{len(df):>5} -> {table}   {kinds}")
 
+    # synthetic rows clone real rows' state/district, so they resolve through the same pairs
+    from app.pipeline import location
+    location.apply_to_db(engine)
+
     dup = pd.read_sql(
         """
         SELECT external_id, count(*) FILTER (WHERE is_synthetic_anomaly) AS syn,

@@ -5,8 +5,28 @@ from sqlalchemy.orm import Session
 from app.auth import SCOPE_COLUMN, current_user, scope_label, scope_sql
 from app.database import get_db
 from app.models import User
+from app.pipeline import SNAPSHOT_DATE
 
 router = APIRouter(prefix="/meta", tags=["meta"])
+
+
+@router.get("/public-summary")
+def public_summary(db: Session = Depends(get_db)) -> dict:
+    """Three national headline figures for the sign-in page, which runs BEFORE authentication.
+
+    UNAUTHENTICATED on purpose, so it is deliberately narrow: national aggregates of the public MPLADS
+    exports only (no scope, no project, MP or vendor detail, no risk figures). Works are counted from the
+    real records; injected validation rows are not "works tracked" and are excluded here.
+    """
+    row = db.execute(text(
+        "SELECT COALESCE(sum(allocated_amount), 0) AS allocated, count(*) AS mps FROM mp_summary")).one()
+    works = db.execute(text("SELECT count(*) FROM projects WHERE NOT is_synthetic_anomaly")).scalar() or 0
+    return {
+        "allocated_amount": float(row.allocated),
+        "works_tracked": int(works),
+        "mps_covered": int(row.mps),
+        "as_of": SNAPSHOT_DATE.isoformat(),
+    }
 
 
 @router.get("/filters")
@@ -14,7 +34,8 @@ def filter_options(db: Session = Depends(get_db), user: User = Depends(current_u
     """Option lists + score-band counts for the dashboard filter controls (scoped)."""
     scope, params = scope_sql(user, "p")
     states = db.execute(
-        text(f"SELECT DISTINCT p.state FROM projects p WHERE p.state IS NOT NULL{scope} ORDER BY 1"),
+        text(f"SELECT DISTINCT p.work_state AS st FROM projects p "
+             f"WHERE p.work_state IS NOT NULL{scope} ORDER BY 1"),
         params,
     ).scalars().all()
     categories = db.execute(
@@ -63,7 +84,8 @@ def summary(db: Session = Depends(get_db), user: User = Depends(current_user)) -
     if financials_available:
         fin_scope, fin_params = "", {}
         if user.role in ("state_nodal", "mp_self"):
-            col = SCOPE_COLUMN[user.role]
+            # allocations are per MP, so they stay keyed on the MP's own state / name (mp_summary has no location)
+            col = {"state_nodal": "state", "mp_self": "mp_name"}[user.role]
             fin_scope, fin_params = f" WHERE lower({col}) = lower(:s)", {"s": user.scope_value or ""}
         fin = db.execute(
             text(

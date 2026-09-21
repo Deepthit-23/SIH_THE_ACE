@@ -518,6 +518,8 @@ def duplicate_work(
     max_sim = np.zeros(n_all)
     n_match = np.zeros(n_all, int)
     reason = np.full(n_all, None, dtype=object)
+    partner = np.full(n_all, -1, dtype=np.int64)     # id of the matched counterpart (-1 = none)
+    matched_sim = np.zeros(n_all, dtype=int)         # similarity to that counterpart
 
     toks = df["work_description"].map(lambda d: specific_text(d).split())
     df_count = Counter(t for ts in toks for t in set(ts))
@@ -562,6 +564,9 @@ def duplicate_work(
         n_match[idx] = M.sum(axis=1)
         for local in np.flatnonzero(hit):
             j = int(np.argmax(np.where(M[local], S[local], -1)))
+            if "id" in df.columns:
+                partner[idx[local]] = int(df["id"].iloc[idx[j]])
+            matched_sim[idx[local]] = int(S[local, j])
             dj = date.iloc[idx[j]]
             when = dj.strftime("%d %b %Y") if pd.notna(dj) else "another date"
             reason[idx[local]] = (
@@ -570,7 +575,9 @@ def duplicate_work(
             )
 
     out = pd.DataFrame({"flagged": flagged, "reason": reason, "max_similarity": max_sim,
-                        "n_matches": n_match})
+                        "n_matches": n_match,
+                        "partner_id": partner,        # -1 where not flagged
+                        "similarity": matched_sim})
     out.index = df["id"].to_numpy() if "id" in df.columns else df.index
     out.index.name = "project_id"
     return out

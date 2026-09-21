@@ -1,4 +1,5 @@
 // Display helpers -- never render "null"/"undefined"/"(unknown)" to the user.
+import { T } from "./tokens";
 
 export function text(value, fallback = "—") {
   if (value === null || value === undefined) return fallback;
@@ -11,7 +12,7 @@ export function formatINR(value) {
   if (value === null || value === undefined || value === "") return "—";
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
-  if (n >= 1e7) return `₹${(n / 1e7).toFixed(2)} Cr`;
+  if (n >= 1e7) return `₹${(n / 1e7).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Cr`;
   if (n >= 1e5) return `₹${(n / 1e5).toFixed(2)} L`;
   return `₹${n.toLocaleString("en-IN")}`;
 }
@@ -24,36 +25,43 @@ export function severityFor(score) {
   return "none";
 }
 
+// Risk tiers. A tier is shown as a MARK (a bar, or a 3px rule on a chip), tinted lightly behind it; the label
+// text stays ink because the medium tier (about 3.2:1 on white) is too pale to carry small text.
 export const SEVERITY = {
   high: {
     label: "High",
-    bar: "bg-red-600",
-    chip: "bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20",
-    fill: "#dc2626",
+    bar: "bg-high",
+    chip: "border-l-[3px] border-high bg-high/10 text-ink",
+    text: "text-high",
+    fill: T.high,
   },
   medium: {
     label: "Medium",
-    bar: "bg-amber-500",
-    chip: "bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/20",
-    fill: "#f59e0b",
+    bar: "bg-medium",
+    chip: "border-l-[3px] border-medium bg-medium/10 text-ink",
+    text: "text-ink",
+    fill: T.medium,
   },
   low: {
     label: "Low",
-    bar: "bg-yellow-400",
-    chip: "bg-yellow-50 text-yellow-800 ring-1 ring-inset ring-yellow-600/20",
-    fill: "#facc15",
+    bar: "bg-low",
+    chip: "border-l-[3px] border-low bg-low/10 text-ink",
+    text: "text-low",
+    fill: T.low,
   },
   none: {
     label: "Clear",
-    bar: "bg-slate-300",
-    chip: "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-500/20",
-    fill: "#cbd5e1",
+    bar: "bg-clear",
+    chip: "border-l-[3px] border-clear bg-clear/10 text-ink-soft",
+    text: "text-ink-soft",
+    fill: T.clear,
   },
   unscored: {
     label: "Unscored",
-    bar: "bg-slate-200",
-    chip: "bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-400/20",
-    fill: "#e2e8f0",
+    bar: "bg-hairline",
+    chip: "border-l-[3px] border-hairline bg-canvas text-ink-soft",
+    text: "text-ink-faint",
+    fill: T.hairline,
   },
 };
 
@@ -65,10 +73,10 @@ export function titleCase(s) {
 }
 
 export const CASE_STATUS = {
-  pending: { label: "Pending", chip: "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-400/30" },
-  under_review: { label: "Under review", chip: "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20" },
-  confirmed: { label: "Confirmed", chip: "bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20" },
-  dismissed: { label: "Dismissed", chip: "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20" },
+  pending: { label: "Pending", chip: "border-l-[3px] border-clear bg-clear/10 text-ink-soft" },
+  under_review: { label: "Under review", chip: "border-l-[3px] border-accent bg-accent/10 text-ink" },
+  confirmed: { label: "Confirmed", chip: "border-l-[3px] border-high bg-high/10 text-ink" },
+  dismissed: { label: "Dismissed", chip: "border-l-[3px] border-low bg-low/10 text-ink" },
 };
 
 export const CASE_ORDER = ["pending", "under_review", "confirmed", "dismissed"];

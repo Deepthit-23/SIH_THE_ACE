@@ -78,6 +78,9 @@ class ExplanationItem(BaseModel):
     label: str
     weight: float
     message: str
+    # duplicate_work only: the matched counterpart project and the text similarity (0-100)
+    counterpart_id: int | None = None
+    similarity: int | None = None
 
 
 class RiskListItem(BaseModel):
@@ -88,7 +91,8 @@ class RiskListItem(BaseModel):
     work_description: str | None = None
     mp_name: str | None = None
     constituency: str | None = None
-    state: str | None = None
+    state: str | None = None                     # the MP's state
+    work_state: str | None = None                # where the work is located; None = unresolved location
     district: str | None = None
     derived_category: str | None = None
     status: str | None = None
@@ -120,6 +124,12 @@ class ProjectDetail(ProjectOut):
     case_status: str = "pending"
     case_note: str | None = None
     case_updated_at: datetime | None = None
+    # State the work is located in; differs from `state` (the MP's state) for cross-state works
+    work_state: str | None = None
+    # timeline dates (already stored, just not exposed before): latest scoring run, and the first
+    # scoring run on record for this project (earliest risk_score entry in the audit chain)
+    flagged_at: datetime | None = None
+    first_flagged_at: datetime | None = None
 
 
 class CaseUpdateIn(BaseModel):
@@ -192,6 +202,7 @@ class DistrictCategoryStat(BaseModel):
 
 class DistrictPattern(BaseModel):
     district: str
+    state: str | None = None
     project_count: int
     avg_risk_score: float
     high_risk_count: int            # >= threshold
@@ -201,6 +212,7 @@ class DistrictPattern(BaseModel):
 
 class PatternRankRow(BaseModel):
     key: str                        # district name or vendor name
+    state: str | None = None        # districts only: the state the district is in (names repeat across states)
     project_count: int | None = None
     txn_count: int | None = None
     avg_risk_score: float | None = None

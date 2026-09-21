@@ -45,7 +45,8 @@ def _risk_filters(min_score, derived_category, state, district, status, case_sta
     if derived_category:
         filters.append(Project.derived_category == derived_category)
     if state:
-        filters.append(func.upper(Project.state) == state.upper())
+        # geography filter = where the work is LOCATED (falls back to the MP's state)
+        filters.append(func.upper(Project.work_state) == state.upper())
     if district:
         filters.append(func.upper(Project.district) == district.upper())
     if status:
@@ -123,6 +124,7 @@ def list_risk_scores(
             mp_name=project.mp_name,
             constituency=project.constituency,
             state=project.state,
+            work_state=project.work_state,
             district=project.district,
             derived_category=project.derived_category,
             status=project.status,
@@ -138,7 +140,7 @@ def list_risk_scores(
 
 
 _CSV_COLUMNS = [
-    "project_id", "work_id", "work_description", "mp_name", "constituency", "state",
+    "project_id", "work_id", "work_description", "mp_name", "constituency", "state", "work_state",
     "district", "category", "work_status", "amount_inr", "risk_score", "severity",
     "case_status", "top_reason_1", "top_reason_2",
 ]
@@ -180,7 +182,7 @@ def export_csv(
             reasons = _top_reasons(rf.explanation, 2) + ["", ""]
             w.writerow([
                 project.id, project.external_id or "", project.work_description or "",
-                project.mp_name or "", project.constituency or "", project.state or "",
+                project.mp_name or "", project.constituency or "", project.state or "", project.work_state or "",
                 project.district or "", project.derived_category or "", project.status or "",
                 project.sanctioned_amount or project.final_amount or "",
                 rf.combined_risk_score, severity_band(rf.combined_risk_score),

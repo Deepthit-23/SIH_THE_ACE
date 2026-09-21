@@ -13,10 +13,10 @@ import { clearSession, loadSession } from "./lib/session";
 
 function NotFound() {
   return (
-    <div className="rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
+    <div className="rounded border border-hairline bg-surface p-6 text-sm text-ink-soft">
       <p className="font-medium">Page not found</p>
-      <Link to="/" className="mt-2 inline-block text-slate-500 underline hover:text-ink">
-        ← Back to the risk list
+      <Link to="/" className="mt-2 inline-block text-ink-soft underline hover:text-ink">
+        Back to the risk list
       </Link>
     </div>
   );
@@ -24,10 +24,10 @@ function NotFound() {
 
 function NotAuthorised() {
   return (
-    <div className="rounded border border-slate-200 bg-white p-6 text-sm text-slate-600">
+    <div className="rounded border border-hairline bg-surface p-6 text-sm text-ink-soft">
       <p className="font-medium">Ministry access required</p>
-      <p className="mt-1 text-slate-500">User management is available to the Ministry role only.</p>
-      <Link to="/" className="mt-2 inline-block text-slate-500 underline hover:text-ink">← Back to the risk list</Link>
+      <p className="mt-1 text-ink-soft">User management is available to the Ministry role only.</p>
+      <Link to="/" className="mt-2 inline-block text-ink-soft underline hover:text-ink">Back to the risk list</Link>
     </div>
   );
 }

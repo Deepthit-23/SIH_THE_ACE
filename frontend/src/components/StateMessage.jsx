@@ -1,24 +1,16 @@
-// Shared loading / empty / error panels.
+// Shared loading / empty / error states. Static: the only animation in the tool is the sign-in count-up.
 
 export function Loading({ label = "Loading…" }) {
-  return (
-    <div className="flex items-center gap-2 p-6 text-sm text-slate-500">
-      <span className="h-3 w-3 animate-pulse rounded-full bg-slate-400" />
-      {label}
-    </div>
-  );
+  return <p className="py-6 text-sm text-ink-faint">{label}</p>;
 }
 
 export function ErrorBox({ error, onRetry }) {
   return (
-    <div className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-      <p className="font-medium">Something went wrong</p>
-      <p className="mt-1 text-red-600">{error}</p>
+    <div className="border-l-[3px] border-high bg-high/10 px-4 py-3 text-sm">
+      <p className="font-semibold text-ink">Something went wrong</p>
+      <p className="mt-0.5 text-ink-soft">{error}</p>
       {onRetry && (
-        <button
-          onClick={onRetry}
-          className="mt-3 rounded border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
-        >
+        <button onClick={onRetry} className="btn mt-2">
           Retry
         </button>
       )}
@@ -27,9 +19,5 @@ export function ErrorBox({ error, onRetry }) {
 }
 
 export function Empty({ children = "Nothing to show." }) {
-  return (
-    <div className="rounded border border-slate-200 bg-white p-6 text-sm text-slate-500">
-      {children}
-    </div>
-  );
+  return <p className="border border-dashed border-hairline px-4 py-6 text-sm text-ink-soft">{children}</p>;
 }

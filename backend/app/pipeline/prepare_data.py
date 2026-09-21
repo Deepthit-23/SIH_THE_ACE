@@ -219,6 +219,11 @@ def main(argv: list[str] | None = None) -> int:
         n = _write(df, table)
         print(f"  {n:>7,} rows")
 
+    # where each work is located (work_state), so district scoping can use the (state, district) pair
+    from app.pipeline import location
+    st = location.apply_to_db(engine)
+    print(f"work_state derived: {st['by_method']}; relocated {st['relocated_rows']:,} rows")
+
     # --reset drops every table, so re-create what the app needs beyond the CSVs:
     # official ceilings (needs projects + mp_summary loaded, for the match report) and demo users.
     try:

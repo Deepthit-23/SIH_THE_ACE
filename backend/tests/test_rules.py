@@ -318,3 +318,16 @@ def test_stalled_suppressed_for_mp_in_office_under_18_months():
                            "official_allocated_ceiling": 1, "term_start": start}])
     assert not rules.stalled_project(proj, vtx, mp_allocation=alloc).loc[1, "flagged"]
     assert rules.stalled_project(proj, vtx).loc[1, "flagged"]     # no allocation info -> flagged
+
+
+def test_duplicate_records_the_matched_counterpart_and_similarity():
+    d1 = SNAPSHOT_DATE - timedelta(days=100)
+    proj = _dup([
+        {"work_description": DESC, "external_id": "A"},
+        {"work_description": DESC + " ", "final_amount": 540_000, "completion_date": d1, "external_id": "B"},
+        {"work_description": "Completely unrelated street light Pipli Ward Nine", "external_id": "C"},
+    ])
+    res = rules.duplicate_work(proj)
+    assert res.loc[1, "partner_id"] == 2 and res.loc[2, "partner_id"] == 1     # they point at each other
+    assert res.loc[1, "similarity"] >= rules.DUPLICATE_TEXT_SIMILARITY
+    assert res.loc[3, "partner_id"] == -1 and res.loc[3, "similarity"] == 0    # unflagged: no counterpart

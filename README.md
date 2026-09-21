@@ -65,7 +65,7 @@ docker compose down -v && docker compose up -d --build   # wipes the DB volume
 ### Optional — validation reports & tests
 
 ```bash
-docker compose exec backend python -m pytest                       # 118 tests incl. RBAC + user management
+docker compose exec backend python -m pytest                       # 159 tests incl. RBAC, state/district location scoping, user management, map/graph feeds
 docker compose exec backend python -m app.pipeline.sanity_report   # -> data/processed/sanity_report.md
 docker compose exec backend python -m app.pipeline.evaluate_rules  # -> data/processed/rule_eval.md
 docker compose exec backend python -m app.pipeline.evaluate_ml     # -> data/processed/ml_eval.md
@@ -116,6 +116,9 @@ Verify at http://localhost:8000/docs.
 | `GET /meta/filters` | filter option lists + score-band counts |
 | `GET /admin/users`, `POST /admin/users`, `PATCH /admin/users/{id}`, `GET /admin/scope-options` | **Ministry only** (403 for every other role): list / create / deactivate-reactivate-reset-password users; scope choices from the data |
 | `POST /auth/change-password` | self-service; the only way out of `must_change_password` |
+| `GET /audit/recent` | newest audit entries (id, type, hash, previous hash, timestamp; never payloads) for the chain widget |
+| `GET /patterns/states` | per-state flagged share / average score / counts (scoped) for the map |
+| `GET /patterns/network` | strongest flagged MP-vendor concentration relationships (scoped) for the network graph |
 | `GET /audit/verify` | walk the hash-chain → `{valid, entries_checked, broken_at, cached}` (cached on a table fingerprint) |
 
 ## How scoring works
@@ -311,6 +314,110 @@ Ministry only) or the `/admin/*` API:
   startup); a dump taken before this feature restores fine and upgrades when the backend next starts.
 - The temporary password is shown to the admin once, in the browser, so it can be handed over out of
   band; there is no email/SMS delivery.
+
+## Analytical views
+
+- **Project timeline** (project detail): recommended -> completed -> first flagged -> case reviewed, with the
+  elapsed time on each step. "First flagged" is the earliest scoring run on record (from the audit chain);
+  `risk_flags.flagged_at` is rewritten on every re-score, so it is shown only as "re-scored on ...". The
+  detail endpoint gained `flagged_at` / `first_flagged_at` for this (data was already stored).
+- **Duplicate side-by-side** (project detail, when `duplicate_work` fired): this project vs its matched
+  counterpart, word-level diff, text similarity, amount gap and date gap. The rule now records
+  `counterpart_id` and `similarity` on its explanation item. The counterpart is fetched through the normal
+  scoped project endpoint, so if it sits outside the viewer's scope (67 pairs cross a district boundary)
+  the panel says so and shows the stored similarity only.
+- **Audit chain widget** (sidebar): the newest 6 audit entries as linked blocks (truncated hash,
+  timestamp, event type), refreshed every 20 s. It shows the chain's structure; the pass/fail verdict over
+  the whole chain remains the header badge.
+- **State choropleth** (Patterns page): colour by flagged share (score >= 50) or average score; ranked list
+  alongside; click a state to open its projects. Scoped server-side: a State user gets only their state,
+  a District/MP user gets only the projects in their own scope.
+- **Contractor-MP network** (Patterns page): only the relationships the concentration rule flags (a vendor
+  holding >= 40% of an MP unit's transactions), top N (20-150) by share; line width = transaction value;
+  hover isolates a node, click pins its details. Note the data's shape: flagged relationships are almost
+  all one-to-one (top 40 = 40 MP units, 39 contractors), so the graph is mostly isolated pairs, not a web.
+  `/patterns/contractors` was not enough (vendor totals only, no MP links), hence `/patterns/network`.
+
+### State map data
+
+Boundaries: DataMeet India community, `datameet/maps` (`States/Admin2.shp`), **CC BY 4.0** (per the
+repository README; attribution is shown under the map and in `frontend/src/assets/india-states.LICENSE.txt`).
+The file is current (36 states/UTs including Telangana, Ladakh and the merged Dadra & Nagar Haveli and Daman
+& Diu). Geometry was simplified (1.5%, ~277 KB) and re-wound for d3-geo; no boundary was edited.
+
+Name matching (our `projects.state` vs the GeoJSON `ST_NM`), run before any rendering: **36 of 36 matched,
+100% of the 131,916 projects covered, one-to-one in both directions.** 33 matched exactly; 3 needed only
+`&`/`and`, "The" and "Islands" normalisation (Andaman & Nicobar, Jammu & Kashmir, Dadra & Nagar Haveli and Daman
+& Diu). The canonical name is baked into each feature, so the runtime join is plain equality.
+
+Caveats: the map is illustrative. Depiction of India's external boundary (notably Jammu & Kashmir and
+Ladakh) should be checked against Survey of India requirements before any public release. Rates for very
+small states/UTs rest on few projects (e.g. Dadra & Nagar Haveli and Daman & Diu: 63). The map, the state
+filter and the district chart use where the work is LOCATED (see "Work location and scoping").
+
+## Work location and scoping
+
+**The data has two geographies per row.** `state` is the MP's state (for a Rajya Sabha member, the state they
+were elected from); `district` is parsed from the implementing-agency (IDA) string, i.e. where the work is
+done, and carries **no state**. MPLADS lets members fund works outside their state, so the two can differ, and
+district names repeat across states (Bilaspur HP/CG, Hamirpur HP/UP, Pratapgarh RJ/UP, ...).
+
+**The bug this caused.** A District Authority was scoped on the district name alone, so "HYDERABAD" also saw
+12 projects labelled Uttar Pradesh. Root cause, checked against the raw CSV: not an IDA-parsing collision
+(the string is literally `HYDERABAD(DISTRICT COLLECTOR HYDERABAD_IDA)`) but a genuine cross-state work: all 12
+belong to one Rajya Sabha member elected from Uttar Pradesh whose works are in Hyderabad, Telangana.
+
+**The scoping hierarchy now nests**
+
+| Role | Scope | Column |
+|---|---|---|
+| Ministry | national | none |
+| State | the state the work is located in | `work_state` |
+| District | the (state, district) pair | `work_state` + `district` |
+| MP | their own portfolio, wherever it is located | `mp_name` |
+
+Every District scope is inside its State scope by construction (same column), which is asserted against the data.
+State officers therefore see works *implemented in their state*, including other states' MPs' works there, and do
+not see their own MPs' works implemented elsewhere. MP-level allocation figures (header tiles) stay keyed on the
+MP's own state, since allocations are per MP.
+
+**How `work_state` is derived** (`backend/app/pipeline/location.py`; runs in `prepare_data` and
+`inject_anomalies`, and automatically at startup if a database has never been derived; or
+`python -m app.pipeline.location`, which also writes `data/processed/location_report.md`). Per (MP state,
+district) pair:
+1. **home**: the Census-2011 district list (`data/reference/`, DataMeet, CC BY 2.5 India) confirms it, or it
+   dominates that district name among Lok Sabha rows (>= 5 rows and >= 50%; recognises districts created since 2011);
+2. **cross_state**: otherwise, if the name is "home" in exactly one state, the work is relocated there;
+3. **only_state**: otherwise, if the name occurs under a single state anywhere in the data, that state (small or
+   new districts such as Namchi, Sepahijala);
+4. **unresolved**: anything else (a multi-state name none of whose homes is provably this MP's) gets
+   `work_state = NULL`, `location_method = 'unresolved'`.
+
+Rows with **no district recorded at all** (unparseable IDA) have no positive location evidence either, so they
+get the same treatment: `work_state = NULL`, `location_method = 'no_district'` (kept distinct for reporting).
+
+Current data (projects / vendor transactions): home 129,907 / 107,302; cross_state 711 / 526; only_state 50 / 37;
+**no_district 1,238 / 2,602; unresolved 10 / 3**. The unresolved works are three Rajya Sabha members' works in a
+"Bilaspur", "Pratapgarh" or "Hamirpur" that exists in several states. (1,775 of the no-district vendor
+transactions are injected test fixtures, which were created without a district.)
+
+**Works with no positive location fail closed** (both sets above, identically). A NULL location matches no
+State or District scope, so those works are visible only to the Ministry and to the MP who owns them (by name).
+They still count in national totals, and the state aggregates report them as `unlocated_count` (1,248 projects;
+national totals reconcile: states + unlocated = all projects). The risk list shows "location unresolved" (has a
+district) or "no location recorded" (has none); the map footnote says how many are not placed. The cost: about 1%
+of each state's portfolio (works whose IDA could not be parsed) is not in that state's officer's view; they are
+in the Ministry's.
+`work_state` is never used with a fallback to `state`, so a database that has not been derived also fails closed
+(startup derives it).
+
+**Where the location is used.** District and State scoping (every path: list, detail, cases, search, CSV
+export, aggregates, map, contractor network), the risk-list state filter and its options, the state map, the
+district chart/drill-down (grouped by state + district), and the admin panel (a district account is created from
+a (state, district) pair; one dropdown entry per pair). The project page shows "Work location" when it differs
+from the MP's state. The state map is drawn for the Ministry and State roles only; District and MP users get a
+summary card headed by their full scope (e.g. "HYDERABAD, Telangana"), because colouring a whole state from a
+narrower scope's numbers would misstate it.
 
 ## Pipeline
 

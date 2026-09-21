@@ -24,7 +24,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 from rapidfuzz import fuzz, utils
 
-from app.auth import DEMO_USERS, seed_demo_users
+from app.auth import DEMO_SCOPE_STATE, DEMO_USERS, seed_demo_users
 from app.config import settings
 from app.database import SessionLocal, engine
 
@@ -36,7 +36,7 @@ def _load() -> pd.DataFrame:
     df = pd.read_sql(
         """
         SELECT p.id, p.external_id, p.work_description, p.mp_name, p.constituency, p.state,
-               p.district, p.derived_category, p.status, p.recommendation_date,
+               p.district, p.work_state, p.derived_category, p.status, p.recommendation_date,
                p.completion_date, p.is_synthetic_anomaly AS syn, p.anomaly_type,
                COALESCE(p.sanctioned_amount, p.final_amount) AS amount,
                rf.combined_risk_score AS score, rf.rule_flags, rf.explanation,
@@ -156,21 +156,24 @@ def pick_roles(df: pd.DataFrame) -> list[dict]:
     picks: list[dict] = []
     st = scope_of("state_nodal")["scope"]
     di = scope_of("district_authority")["scope"]
+    di_state = DEMO_SCOPE_STATE["district_demo"]
     mp = scope_of("mp_self")["scope"]
 
     def best(d: pd.DataFrame):
         return d.sort_values(["n_rules", "score"], ascending=[False, False]).head(1)
 
-    inside_any = (real.state.str.lower() == st.lower()) | (real.district.str.lower() == di.lower()) \
-        | (real.mp_name.str.lower() == mp.lower())
+    # State and District scopes are LOCATION scopes (work_state); District is the (state, district) pair
+    ws = real.work_state.fillna("").str.lower()
+    in_district = (real.district.fillna("").str.lower() == di.lower()) & (ws == di_state.lower())
+    inside_any = (ws == st.lower()) | in_district | (real.mp_name.str.lower() == mp.lower())
     m = best(real[~inside_any & (real.score >= 70) & (real.n_rules >= 2) & (real.case_status == "pending")])
     picks.append({"role": "ministry", "row": m.iloc[0], "line":
                   "National view. This project sits OUTSIDE the state, district and MP demo scopes, so it is "
                   "the one to show the ministry seeing something the other three roles get a 403 for."})
-    s = best(real[(real.state.str.lower() == st.lower()) & (real.score >= 70) & (real.n_rules >= 2)])
+    s = best(real[(ws == st.lower()) & (real.score >= 70) & (real.n_rules >= 2)])
     picks.append({"role": "state_nodal", "row": s.iloc[0], "line":
                   f"State nodal officer for {st}: a multi-signal flag inside their state, ready to confirm or dismiss."})
-    d = best(real[(real.district.str.lower() == di.lower()) & (real.score >= 70) & (~real.id.isin([s.iloc[0]["id"]]))])
+    d = best(real[in_district & (real.score >= 70) & (~real.id.isin([s.iloc[0]["id"]]))])
     picks.append({"role": "district_authority", "row": d.iloc[0], "line":
                   f"District authority for {di}: a high-score flag in their district (a different project from "
                   "the state one, so the two logins tell different stories). District users see no MP-level "

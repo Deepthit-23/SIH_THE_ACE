@@ -36,10 +36,10 @@ export default function ChangePasswordPage({ session, onDone, onLogout }) {
   }
 
   return (
-    <main className="mx-auto mt-24 max-w-sm rounded border border-slate-200 bg-white p-6">
+    <main className="mx-auto mt-24 max-w-sm rounded border border-hairline bg-surface p-6">
       <h1 className="text-lg font-semibold">Set a new password</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Signed in as <span className="font-medium text-slate-700">{session.username}</span>. Your account was
+      <p className="mt-1 text-sm text-ink-soft">
+        Signed in as <span className="font-medium text-ink">{session.username}</span>. Your account was
         created with a temporary password; choose your own to continue.
       </p>
       <form className="mt-4 space-y-3" onSubmit={submit}>
@@ -49,15 +49,15 @@ export default function ChangePasswordPage({ session, onDone, onLogout }) {
           value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
         <input className="w-full rounded border p-2" type="password" placeholder="Confirm new password"
           value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
-        {(problem || error) && <p className="text-sm text-red-600">{problem || error}</p>}
+        {(problem || error) && <p className="text-sm text-high">{problem || error}</p>}
         <button
           disabled={busy || !current || !next || !!problem || next !== confirm}
-          className="w-full rounded bg-slate-800 p-2 text-white disabled:opacity-50"
+          className="w-full rounded bg-ink p-2 text-surface disabled:opacity-50"
         >
           {busy ? "Saving…" : "Change password and continue"}
         </button>
       </form>
-      <button onClick={onLogout} className="mt-4 text-xs text-slate-500 underline">Sign out</button>
+      <button onClick={onLogout} className="mt-4 text-xs text-ink-soft underline">Sign out</button>
     </main>
   );
 }

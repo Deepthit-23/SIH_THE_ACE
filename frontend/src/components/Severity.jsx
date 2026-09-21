@@ -1,30 +1,22 @@
 import { SEVERITY, severityFor } from "../lib/format";
 
+/** Tier label as a marked chip: a 3px tier rule and a light tint, ink text. */
 export function SeverityBadge({ score, className = "" }) {
-  const key = severityFor(score);
-  const meta = SEVERITY[key];
-  return (
-    <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${meta.chip} ${className}`}
-    >
-      {meta.label}
-    </span>
-  );
+  const meta = SEVERITY[severityFor(score)];
+  return <span className={`inline-block px-2 py-0.5 text-xs font-medium ${meta.chip} ${className}`}>{meta.label}</span>;
 }
 
-/** Score bar + numeric value -- the row-level severity indicator. */
+/** Row-level indicator: the score as a figure, with a thin bar in the tier colour beneath it. */
 export function ScoreBar({ score }) {
-  const key = severityFor(score);
-  const meta = SEVERITY[key];
+  const meta = SEVERITY[severityFor(score)];
+  const has = score !== null && score !== undefined;
   const pct = Math.max(2, Math.min(100, score ?? 0));
   return (
-    <div className="flex items-center gap-2">
-      <div className="h-2 w-24 overflow-hidden rounded-full bg-slate-100">
-        <div className={`h-full rounded-full ${meta.bar}`} style={{ width: `${pct}%` }} />
+    <div className="w-16">
+      <p className={`fig text-base font-semibold leading-none ${meta.text}`}>{has ? Math.round(score) : "-"}</p>
+      <div className="mt-1.5 h-[3px] w-full bg-hairline">
+        <div className={`h-full ${meta.bar}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-8 text-right text-xs font-semibold tabular-nums text-slate-700">
-        {score === null || score === undefined ? "—" : Math.round(score)}
-      </span>
     </div>
   );
 }

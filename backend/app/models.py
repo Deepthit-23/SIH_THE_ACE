@@ -38,6 +38,11 @@ class Project(Base):
     state: Mapped[str | None] = mapped_column(String(128), index=True)
     # Best-effort district, parsed from the IDA code prefix (uppercased). Nullable.
     district: Mapped[str | None] = mapped_column(String(128), index=True)
+    # State the WORK is located in (`state` is the MP's state). Derived by pipeline/location.py; NULL
+    # (= "same as state") until it has run. District scoping uses (work_state, district), never the name alone.
+    work_state: Mapped[str | None] = mapped_column(String(128), index=True)
+    # how work_state was derived: home | cross_state | only_state | unresolved | no_district | unlocated (the last three: work_state NULL)
+    location_method: Mapped[str | None] = mapped_column(String(16))
     ida: Mapped[str | None] = mapped_column(String(255))
     house: Mapped[str | None] = mapped_column(String(32), index=True)
     is_rajya_sabha: Mapped[bool] = mapped_column(
@@ -99,6 +104,10 @@ class VendorTransaction(Base):
     vendor: Mapped[str | None] = mapped_column(String(255), index=True)
     ida: Mapped[str | None] = mapped_column(String(255))
     district: Mapped[str | None] = mapped_column(String(128), index=True)
+    # State the WORK is located in (`state` is the MP's state). Derived by pipeline/location.py; NULL
+    # (= "same as state") until it has run. District scoping uses (work_state, district), never the name alone.
+    work_state: Mapped[str | None] = mapped_column(String(128), index=True)
+    location_method: Mapped[str | None] = mapped_column(String(16))
 
     amount: Mapped[float | None] = mapped_column(Numeric(16, 2))
     expenditure_date: Mapped[date | None] = mapped_column(Date)
@@ -173,6 +182,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     scope_value: Mapped[str | None] = mapped_column(String(255))
+    # District Authority accounts are scoped by the (state, district) PAIR: district names repeat across
+    # states. scope_state is that state; a district user without one sees nothing (fails closed).
+    scope_state: Mapped[str | None] = mapped_column(String(255))
     # Provisioning state (Ministry user management). Existing rows default to active / no forced change,
     # so the seeded demo accounts keep working. Added to old databases by auth.ensure_user_columns().
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))

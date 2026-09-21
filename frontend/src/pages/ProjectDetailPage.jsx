@@ -4,14 +4,17 @@ import { useAsync } from "../hooks/useAsync";
 import ExplanationList, { ScoreHeadline } from "../components/ExplanationList";
 import ScoreBreakdown from "../components/ScoreBreakdown";
 import CasePanel from "../components/CasePanel";
+import ProjectTimeline from "../components/ProjectTimeline";
+import DuplicateComparison from "../components/DuplicateComparison";
+import Meta from "../components/Meta";
 import { ErrorBox, Loading } from "../components/StateMessage";
 import { formatINR, text, titleCase } from "../lib/format";
 
 function Fact({ label, children }) {
   return (
     <div>
-      <dt className="text-xs uppercase tracking-wide text-slate-400">{label}</dt>
-      <dd className="mt-0.5 text-sm text-slate-800">{children}</dd>
+      <dt className="text-xs text-ink-faint">{label}</dt>
+      <dd className="mt-0.5 text-sm text-ink">{children}</dd>
     </div>
   );
 }
@@ -22,8 +25,8 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="space-y-5">
-      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-ink">
-        ← Back to risk list
+      <Link to="/" className="text-sm text-ink-soft underline decoration-hairline underline-offset-4 hover:text-ink hover:decoration-ink">
+        Back to the risk list
       </Link>
 
       {status === "loading" && <Loading label="Loading project…" />}
@@ -31,14 +34,13 @@ export default function ProjectDetailPage() {
 
       {status === "success" && data && (
         <>
-          <div className="rounded border border-slate-200 bg-white p-5">
+          <div className="rounded border border-hairline bg-surface p-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="max-w-2xl">
-                <p className="text-xs text-slate-400">
-                  Work ID {text(data.external_id, "—")} ·{" "}
-                  {titleCase(data.status)} · {data.source_file ? text(data.source_file) : ""}
+                <p className="text-xs text-ink-soft">
+                  <Meta items={[<span>Work ID <span className="fig">{text(data.external_id, "-")}</span></span>, titleCase(data.status), data.source_file ? text(data.source_file) : null]} />
                 </p>
-                <h2 className="mt-1 text-lg font-semibold text-slate-900">
+                <h2 className="mt-1 text-lg font-semibold text-ink">
                   {text(data.work_description, "Untitled work")}
                 </h2>
               </div>
@@ -50,6 +52,9 @@ export default function ProjectDetailPage() {
               <Fact label="Constituency">{text(data.constituency)}</Fact>
               <Fact label="House">{text(data.house)}</Fact>
               <Fact label="State">{text(data.state)}</Fact>
+              {data.work_state && data.work_state !== data.state && (
+                <Fact label="Work location">{data.work_state} <span className="text-xs text-ink-faint">(cross-state work)</span></Fact>
+              )}
               <Fact label="District">{text(data.district)}</Fact>
               <Fact label="Category">{titleCase(data.derived_category) || "—"}</Fact>
               <Fact label="Sanctioned">{formatINR(data.sanctioned_amount)}</Fact>
@@ -59,11 +64,17 @@ export default function ProjectDetailPage() {
             </dl>
           </div>
 
+          <ProjectTimeline project={data} />
+
+          {data.explanation?.filter((e) => e.code === "duplicate_work" && e.counterpart_id).map((e) => (
+            <DuplicateComparison key={e.counterpart_id} project={data} item={e} />
+          ))}
+
           <div className="grid gap-5 lg:grid-cols-3">
             <div className="space-y-5 lg:col-span-2">
-              <div className="rounded border border-slate-200 bg-white p-5">
-                <h3 className="text-sm font-semibold text-slate-800">Why this project was flagged</h3>
-                <p className="mb-4 mt-1 text-xs text-slate-500">
+              <div className="rounded border border-hairline bg-surface p-5">
+                <h3 className="text-sm font-semibold text-ink">Why this project was flagged</h3>
+                <p className="mb-4 mt-1 text-xs text-ink-soft">
                   Ordered by contribution to the risk score. Each point is a separate
                   signal — read together, not as a single verdict.
                 </p>
